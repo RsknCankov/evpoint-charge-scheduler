@@ -56,13 +56,42 @@ as you have wired up and the integration degrades gracefully:
 | **Apartment current sensor** | Load balancing is disabled — the charger uses the full configured limit. |
 | **Car SoC sensor** | A manual `Current SoC` number entity is created for you to keep up to date. |
 | **Charger switch entity** | The integration sets the current limit but doesn't start/stop the transaction. |
-| **OCPP service** | "Advisory mode" — decisions are exposed via sensors but no commands are sent. Hook your own automations onto `sensor.dynamic_target_current` / `sensor.recommended_action`. |
+| **OCPP service / devid** | "Advisory mode" — decisions are exposed via sensors but no commands are sent. Both the service name **and** the OCPP `devid` must be set for the integration to push charging profiles; missing either disables that path. Hook your own automations onto `sensor.dynamic_target_current` / `sensor.recommended_action`. |
 
 Other fields (battery capacity, voltage, phases, min/max current, total
 limit, headroom, night-tariff times, safety margin) have sensible defaults
 but are still worth setting to match your hardware.
 
 All of these can be edited later via the integration's **Configure** button.
+
+## OCPP service payload
+
+When a current limit needs to be applied, the integration calls the configured
+OCPP service with the following payload (built dynamically from the planner's
+decision and your config):
+
+```yaml
+action: ocpp.set_charge_rate
+data:
+  devid: <ocpp_devid from config>
+  limit_amps: <computed current in amps>
+  limit_watts: <amps × voltage × √3 for 3-phase, or × 1 for 1-phase>
+  custom_profile:
+    chargingProfileId: <charging_profile_id from config, default 8>
+    stackLevel: 0
+    chargingProfileKind: Relative
+    chargingProfilePurpose: ChargePointMaxProfile
+    chargingSchedule:
+      chargingRateUnit: A
+      chargingSchedulePeriod:
+        - startPeriod: 0
+          limit: <amps>
+```
+
+The `chargingProfileId` is reused for every update so the charger replaces the
+existing profile rather than stacking new ones. If you have other automations
+also installing OCPP profiles, pick a `chargingProfileId` that doesn't collide
+with theirs.
 
 ## Entities created
 

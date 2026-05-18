@@ -14,8 +14,8 @@ CONF_NIGHT_TARIFF_VALUE = "night_tariff_value"
 CONF_APARTMENT_CURRENT_SENSOR = "apartment_current_sensor"
 CONF_SOC_SENSOR = "soc_sensor"  # optional external SoC source
 CONF_OCPP_SET_RATE_SERVICE = "ocpp_set_rate_service"
-CONF_OCPP_SET_RATE_FIELD = "ocpp_set_rate_field"
-CONF_OCPP_SET_RATE_TARGET = "ocpp_set_rate_target"  # optional entity_id target
+CONF_OCPP_DEVID = "ocpp_devid"
+CONF_CHARGING_PROFILE_ID = "charging_profile_id"
 CONF_CHARGER_SWITCH = "charger_switch"
 
 CONF_BATTERY_CAPACITY = "battery_capacity"
@@ -45,7 +45,7 @@ DEFAULT_NIGHT_END = "06:00"
 DEFAULT_SAFETY_MARGIN_HOURS = 0.5
 DEFAULT_NIGHT_TARIFF_VALUE = "night"
 DEFAULT_OCPP_SERVICE = "ocpp.set_charge_rate"
-DEFAULT_OCPP_FIELD = "limit_amps"
+DEFAULT_CHARGING_PROFILE_ID = 8
 
 # --- Internal entity keys (the integration's own writable inputs) ---
 KEY_TARGET_SOC = "target_soc"
