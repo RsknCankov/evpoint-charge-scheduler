@@ -1,0 +1,62 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "EVPoint Charge Scheduler",
+        "description": "Connect your OCPP charger, electricity tariff sensor, and apartment current meter so the integration can plan night-tariff-first charging while load-balancing against your apartment.",
+        "data": {
+          "tariff_sensor": "Electricity tariff sensor",
+          "night_tariff_value": "Sensor value that means 'night tariff' (e.g. night, off_peak)",
+          "apartment_current_sensor": "Apartment current sensor (Amps, excluding EV)",
+          "soc_sensor": "Car State of Charge sensor (optional)",
+          "charger_switch": "Charger start/stop switch entity",
+          "ocpp_set_rate_service": "OCPP service to set charge rate (domain.service)",
+          "ocpp_devid": "OCPP charger device ID (devid)",
+          "charging_profile_id": "OCPP charging profile ID (default 8)",
+          "battery_capacity": "Battery capacity (kWh)",
+          "charging_loss": "Charging loss factor (1.10 = 10% loss)",
+          "voltage": "Charger voltage (V)",
+          "phases": "Phases (1 or 3)",
+          "min_current": "Minimum charging current (A)",
+          "max_current": "Maximum charging current (A)",
+          "total_current_limit": "Total current limit (apartment + EV) (A)",
+          "safety_headroom": "Safety headroom (A)",
+          "night_start": "Night tariff start (HH:MM)",
+          "night_end": "Night tariff end (HH:MM)",
+          "safety_margin_hours": "Safety margin hours"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "EVPoint Charge Scheduler is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "EVPoint Charge Scheduler options",
+        "data": {
+          "tariff_sensor": "Electricity tariff sensor",
+          "night_tariff_value": "Sensor value that means 'night tariff'",
+          "apartment_current_sensor": "Apartment current sensor",
+          "soc_sensor": "Car State of Charge sensor (optional)",
+          "charger_switch": "Charger start/stop switch entity",
+          "ocpp_set_rate_service": "OCPP service to set charge rate",
+          "ocpp_devid": "OCPP charger device ID (devid)",
+          "charging_profile_id": "OCPP charging profile ID",
+          "battery_capacity": "Battery capacity (kWh)",
+          "charging_loss": "Charging loss factor",
+          "voltage": "Charger voltage (V)",
+          "phases": "Phases",
+          "min_current": "Minimum charging current (A)",
+          "max_current": "Maximum charging current (A)",
+          "total_current_limit": "Total current limit (A)",
+          "safety_headroom": "Safety headroom (A)",
+          "night_start": "Night tariff start",
+          "night_end": "Night tariff end",
+          "safety_margin_hours": "Safety margin hours"
+        }
+      }
+    }
+  }
+}
