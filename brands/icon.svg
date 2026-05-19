@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>EVPoint Charge Scheduler</title>
+  <desc>Lightning bolt over a partial circular charge ring on emerald green, representing a smart charging schedule with a state-of-charge target.</desc>
+  <rect width="512" height="512" rx="96" fill="#065F46"/>
+  <circle cx="256" cy="256" r="186" fill="none" stroke="#FFFFFF" stroke-opacity="0.2" stroke-width="19"/>
+  <path d="M 256 70 A 186 186 0 1 1 69 240" fill="none" stroke="#FFFFFF" stroke-opacity="0.85" stroke-width="19" stroke-linecap="round"/>
+  <path d="M 277 192 V 96 L 133 277 H 235 V 416 L 379 235 H 277 Z" fill="#FFFFFF"/>
+</svg>

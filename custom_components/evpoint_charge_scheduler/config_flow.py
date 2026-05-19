@@ -13,6 +13,7 @@ from .const import (
     CONF_BATTERY_CAPACITY,
     CONF_CHARGER_SWITCH,
     CONF_CHARGING_LOSS,
+    CONF_FINISH_MODE,
     CONF_HEADROOM,
     CONF_MAX_CURRENT,
     CONF_MIN_CURRENT,
@@ -31,6 +32,7 @@ from .const import (
     DEFAULT_BATTERY_CAPACITY,
     DEFAULT_CHARGING_LOSS,
     DEFAULT_CHARGING_PROFILE_ID,
+    DEFAULT_FINISH_MODE,
     DEFAULT_HEADROOM,
     DEFAULT_MAX_CURRENT,
     DEFAULT_MIN_CURRENT,
@@ -43,6 +45,7 @@ from .const import (
     DEFAULT_TOTAL_LIMIT,
     DEFAULT_VOLTAGE,
     DOMAIN,
+    FINISH_MODES,
 )
 
 
@@ -106,6 +109,18 @@ def _build_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             vol.Required(CONF_NIGHT_START, default=d.get(CONF_NIGHT_START, DEFAULT_NIGHT_START)): str,
             vol.Required(CONF_NIGHT_END, default=d.get(CONF_NIGHT_END, DEFAULT_NIGHT_END)): str,
             vol.Required(CONF_SAFETY_MARGIN_HOURS, default=d.get(CONF_SAFETY_MARGIN_HOURS, DEFAULT_SAFETY_MARGIN_HOURS)): vol.Coerce(float),
+
+            # When the charge should aim to finish:
+            #   asap          — start as early as tariff allows; the original behaviour
+            #   end_of_night  — finish just before night tariff ends (gentler on battery)
+            #   departure     — finish exactly at departure (may pay some day-tariff energy)
+            vol.Optional(CONF_FINISH_MODE, default=d.get(CONF_FINISH_MODE, DEFAULT_FINISH_MODE)): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=FINISH_MODES,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                    translation_key="finish_mode",
+                )
+            ),
         }
     )
 

@@ -23,7 +23,8 @@
           "safety_headroom": "Safety headroom (A)",
           "night_start": "Night tariff start (HH:MM)",
           "night_end": "Night tariff end (HH:MM)",
-          "safety_margin_hours": "Safety margin hours"
+          "safety_margin_hours": "Safety margin hours",
+          "finish_mode": "Finish mode"
         }
       }
     },
@@ -54,8 +55,18 @@
           "safety_headroom": "Safety headroom (A)",
           "night_start": "Night tariff start",
           "night_end": "Night tariff end",
-          "safety_margin_hours": "Safety margin hours"
+          "safety_margin_hours": "Safety margin hours",
+          "finish_mode": "Finish mode"
         }
+      }
+    }
+  },
+  "selector": {
+    "finish_mode": {
+      "options": {
+        "asap": "ASAP — charge as soon as tariff allows",
+        "end_of_night": "End of night — finish just before night tariff ends",
+        "departure": "Departure — finish exactly at departure"
       }
     }
   }

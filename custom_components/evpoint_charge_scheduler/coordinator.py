@@ -31,10 +31,12 @@ from .const import (
     ACTION_DONE,
     ACTION_TOO_LATE,
     ACTION_WAIT_FOR_NIGHT,
+    ACTION_WAIT_FOR_START_TIME,
     CONF_APARTMENT_CURRENT_SENSOR,
     CONF_BATTERY_CAPACITY,
     CONF_CHARGER_SWITCH,
     CONF_CHARGING_LOSS,
+    CONF_FINISH_MODE,
     CONF_HEADROOM,
     CONF_MAX_CURRENT,
     CONF_MIN_CURRENT,
@@ -53,6 +55,7 @@ from .const import (
     DEFAULT_BATTERY_CAPACITY,
     DEFAULT_CHARGING_LOSS,
     DEFAULT_CHARGING_PROFILE_ID,
+    DEFAULT_FINISH_MODE,
     DEFAULT_HEADROOM,
     DEFAULT_MAX_CURRENT,
     DEFAULT_MIN_CURRENT,
@@ -65,6 +68,9 @@ from .const import (
     DEFAULT_TOTAL_LIMIT,
     DEFAULT_VOLTAGE,
     DOMAIN,
+    FINISH_MODE_ASAP,
+    FINISH_MODE_DEPARTURE,
+    FINISH_MODE_END_OF_NIGHT,
     PLAN_ALREADY_AT_TARGET,
     PLAN_INSUFFICIENT_TIME,
     PLAN_OK,
@@ -250,6 +256,27 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         day_kw = deficit_kwh / day_hours if (deficit_kwh > 0 and day_hours > 0) else 0.0
         day_current = self._kw_to_current(day_kw, voltage, factor, min_a, max_a) if day_kw > 0 else 0
 
+        # Resolve the finish-mode strategy and compute the latest start time.
+        # asap:          target_finish = now (charge immediately when allowed)
+        # end_of_night:  target_finish = the latest occurrence of night_end before departure
+        # departure:     target_finish = the departure time itself
+        finish_mode = cfg.get(CONF_FINISH_MODE, DEFAULT_FINISH_MODE)
+        charge_duration_hours = (energy_needed / max_kw) if max_kw > 0 else 0.0
+        if finish_mode == FINISH_MODE_END_OF_NIGHT and self.departure_time is not None:
+            target_finish = self._latest_night_end_before(self.departure_time, night_end)
+        elif finish_mode == FINISH_MODE_DEPARTURE and self.departure_time is not None:
+            target_finish = self.departure_time
+        else:
+            target_finish = None  # asap, or no departure set yet
+
+        if target_finish is not None and charge_duration_hours > 0:
+            latest_start = target_finish - timedelta(
+                hours=charge_duration_hours + safety_margin
+            )
+        else:
+            latest_start = now  # charge immediately under asap (or fallback)
+        should_have_started = now >= latest_start
+
         # Decide recommended action
         if not self.smart_charging_enabled:
             action = ACTION_DISABLED
@@ -257,15 +284,31 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             action = ACTION_DONE
         elif hours_to_dep <= 0:
             action = ACTION_TOO_LATE
-        elif is_night_now:
-            action = ACTION_CHARGE_MAX
         elif deficit_kwh > 0:
+            # Always honour the deficit — applies in every finish mode
             action = ACTION_CHARGE_DAY_SUPPLEMENT
         elif slack < safety_margin:
-            # Edge case: very tight, no future night left or already night ended
+            # Safety: too tight to wait around
             action = ACTION_CHARGE_MAX
-        else:
-            action = ACTION_WAIT_FOR_NIGHT
+        elif finish_mode == FINISH_MODE_DEPARTURE:
+            # Tariff irrelevant; just gate on time
+            if should_have_started:
+                action = ACTION_CHARGE_MAX
+            else:
+                action = ACTION_WAIT_FOR_START_TIME
+        elif finish_mode == FINISH_MODE_END_OF_NIGHT:
+            # Must wait for night, then hold until latest_start within night
+            if not is_night_now:
+                action = ACTION_WAIT_FOR_NIGHT
+            elif should_have_started:
+                action = ACTION_CHARGE_MAX
+            else:
+                action = ACTION_WAIT_FOR_START_TIME
+        else:  # FINISH_MODE_ASAP — original behaviour
+            if is_night_now:
+                action = ACTION_CHARGE_MAX
+            else:
+                action = ACTION_WAIT_FOR_NIGHT
 
         # Plan-level target current (before load balancing)
         if action == ACTION_CHARGE_MAX:
@@ -341,6 +384,9 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             "apartment_current": int(apartment_current),
             "load_balancing_active": load_balancing_active,
             "control_mode": control_mode,
+            "finish_mode": finish_mode,
+            "charge_duration_hours": round(charge_duration_hours, 3),
+            "latest_start_time": latest_start if target_finish is not None else None,
         }
 
     # --- Helpers ---
@@ -364,6 +410,23 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         if ns < ne:
             return ns <= tod < ne
         return tod >= ns or tod < ne
+
+    @staticmethod
+    def _latest_night_end_before(target: datetime, night_end_time: time) -> datetime:
+        """Most recent occurrence of `night_end_time` strictly before `target`.
+
+        Used by finish_mode = end_of_night to compute when the charge should
+        wrap up — typically the morning of the departure.
+        """
+        candidate = target.replace(
+            hour=night_end_time.hour,
+            minute=night_end_time.minute,
+            second=0,
+            microsecond=0,
+        )
+        if candidate >= target:
+            candidate -= timedelta(days=1)
+        return candidate
 
     @staticmethod
     def _night_hours_between(

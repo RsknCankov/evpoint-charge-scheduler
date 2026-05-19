@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfElectricCurrent, UnitOfEnergy, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant
@@ -122,6 +122,19 @@ SENSORS: tuple[EVSensorDescription, ...] = (
         name="Tariff source",
         icon="mdi:swap-horizontal",
         value_fn=lambda d: d.get("tariff_source"),
+    ),
+    EVSensorDescription(
+        key="finish_mode",
+        name="Finish mode",
+        icon="mdi:timer-cog-outline",
+        value_fn=lambda d: d.get("finish_mode"),
+    ),
+    EVSensorDescription(
+        key="latest_start_time",
+        name="Latest start time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:timer-play-outline",
+        value_fn=lambda d: d.get("latest_start_time"),
     ),
 )
 

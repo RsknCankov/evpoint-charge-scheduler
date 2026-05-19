@@ -29,6 +29,7 @@ CONF_CHARGING_LOSS = "charging_loss"
 CONF_NIGHT_START = "night_start"
 CONF_NIGHT_END = "night_end"
 CONF_SAFETY_MARGIN_HOURS = "safety_margin_hours"
+CONF_FINISH_MODE = "finish_mode"
 
 # --- Defaults ---
 DEFAULT_BATTERY_CAPACITY = 60.0
@@ -47,6 +48,18 @@ DEFAULT_NIGHT_TARIFF_VALUE = "night"
 DEFAULT_OCPP_SERVICE = "ocpp.set_charge_rate"
 DEFAULT_CHARGING_PROFILE_ID = 8
 
+# --- Finish mode options ---
+# asap          → start charging as soon as the tariff is favourable (default).
+# end_of_night  → time the charge to finish just before night tariff ends; minimises
+#                 calendar-aging idle at high SoC while keeping 100% on night tariff.
+# departure     → time the charge to finish exactly at departure; may cross into day
+#                 tariff if departure is after night ends.
+FINISH_MODE_ASAP = "asap"
+FINISH_MODE_END_OF_NIGHT = "end_of_night"
+FINISH_MODE_DEPARTURE = "departure"
+DEFAULT_FINISH_MODE = FINISH_MODE_ASAP
+FINISH_MODES = [FINISH_MODE_ASAP, FINISH_MODE_END_OF_NIGHT, FINISH_MODE_DEPARTURE]
+
 # --- Internal entity keys (the integration's own writable inputs) ---
 KEY_TARGET_SOC = "target_soc"
 KEY_CURRENT_SOC = "current_soc"
@@ -60,6 +73,7 @@ ACTION_TOO_LATE = "too_late"
 ACTION_CHARGE_MAX = "charge_max_now"
 ACTION_CHARGE_DAY_SUPPLEMENT = "charge_day_supplement"
 ACTION_WAIT_FOR_NIGHT = "wait_for_night"
+ACTION_WAIT_FOR_START_TIME = "wait_for_start_time"
 
 # --- Throttle reasons ---
 THROTTLE_UNRESTRICTED = "unrestricted"

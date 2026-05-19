@@ -1,5 +1,7 @@
 # EVPoint Charge Scheduler for Home Assistant
 
+<img src="brands/icon.png" alt="EVPoint Charge Scheduler" width="128" align="right">
+
 A Home Assistant custom integration that plans EV charging around your **departure
 time, target SoC, electricity tariff, and apartment load**. It tells your OCPP
 charger when to start, what current to draw, and when to stop — automatically
@@ -64,6 +66,23 @@ but are still worth setting to match your hardware.
 
 All of these can be edited later via the integration's **Configure** button.
 
+## Finish mode
+
+Controls *when* the charge is timed to complete. Default is `asap` (the original
+behaviour).
+
+| Mode | When charging finishes | Best for |
+| --- | --- | --- |
+| `asap` (default) | Whenever it naturally finishes, usually shortly after night tariff begins. Car may sit at high SoC for hours. | Maximum cost saving, maximum robustness to delays. |
+| `end_of_night` | Just before night tariff ends. Car sits at high SoC only briefly. | Same cost saving as ASAP, plus gentler on the battery (less calendar aging at high SoC). |
+| `departure` | Exactly at departure time. May cross into day tariff. | A warm battery at departure (useful in winter), at the cost of paying day rates for some energy. |
+
+Internally, modes other than `asap` compute a `latest_start_time` and hold the
+charger off until that moment arrives. `sensor.latest_start_time` exposes this
+so you can see when the integration plans to start. If anything triggers a
+deficit or pushes slack below the safety margin, all modes fall back to
+"charge now" — finish-mode is the polite default, not a hard schedule.
+
 ## OCPP service payload
 
 When a current limit needs to be applied, the integration calls the configured
@@ -113,7 +132,8 @@ with theirs.
 - `sensor.<name>_available_current` (A) — apartment headroom for the EV
 - `sensor.<name>_dynamic_target_current` (A) — actual current pushed to the charger
 - `sensor.<name>_recommended_action` — one of: `disabled`, `done`, `too_late`,
-  `charge_max_now`, `charge_day_supplement`, `wait_for_night`
+  `charge_max_now`, `charge_day_supplement`, `wait_for_night`,
+  `wait_for_start_time`
 - `sensor.<name>_throttle_reason` — `unrestricted`, `smart_charging_pause`,
   `apartment_load_too_high`, `throttled_by_apartment`
 - `sensor.<name>_plan_status` — `ok`, `already_at_target`, `too_late`,
@@ -123,6 +143,11 @@ with theirs.
   only computes, your own automations act)
 - `sensor.<name>_tariff_source` — `sensor` if a tariff entity is configured,
   `schedule` if night/day is being derived from the configured clock window
+- `sensor.<name>_finish_mode` — the currently active finish mode (`asap`,
+  `end_of_night`, or `departure`)
+- `sensor.<name>_latest_start_time` — when charging is planned to begin under
+  the active finish mode. `unavailable` when mode is `asap` (charging starts
+  immediately on entering the night window)
 
 ## Lovelace example
 
@@ -159,3 +184,21 @@ entities:
 ## License
 
 MIT
+
+## Brand icon
+
+The icon and logo files live in [`brands/`](brands/). To make the icon show
+up in the Home Assistant frontend (Settings → Devices & Services and the HACS
+listing), submit a pull request to
+[home-assistant/brands](https://github.com/home-assistant/brands) adding the
+PNG files under:
+
+```
+custom_integrations/evpoint_charge_scheduler/icon.png
+custom_integrations/evpoint_charge_scheduler/icon@2x.png
+custom_integrations/evpoint_charge_scheduler/logo.png        (optional)
+custom_integrations/evpoint_charge_scheduler/logo@2x.png     (optional)
+```
+
+The source `icon.svg` is included if you want to tweak the design before
+submitting.
