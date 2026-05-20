@@ -202,11 +202,15 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
 
     async def async_start_session(self) -> None:
         """Begin a charging session using the current input values."""
+        if self.session_active:
+            return
         self.session_active = True
         await self.async_refresh()
 
     async def async_end_session(self) -> None:
         """End the current session and clear the manual current-SoC input."""
+        if not self.session_active:
+            return
         self.session_active = False
         if self._current_soc_entity is not None:
             await self._current_soc_entity.async_reset()
