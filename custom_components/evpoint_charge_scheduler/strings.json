@@ -69,5 +69,35 @@
         "departure": "Departure — finish exactly at departure"
       }
     }
+  },
+  "entity": {
+    "select": {
+      "finish_mode": {
+        "name": "Finish mode",
+        "state": {
+          "asap": "ASAP — charge as soon as tariff allows",
+          "end_of_night": "End of night — finish just before night tariff ends",
+          "departure": "Departure — finish exactly at departure"
+        }
+      }
+    },
+    "number": {
+      "battery_capacity": {
+        "name": "Battery capacity"
+      }
+    },
+    "button": {
+      "start_session": {
+        "name": "Start charging session"
+      },
+      "stop_session": {
+        "name": "Stop charging session"
+      }
+    },
+    "binary_sensor": {
+      "session_active": {
+        "name": "Charging session active"
+      }
+    }
   }
 }

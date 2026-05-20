@@ -64,10 +64,14 @@ FINISH_MODES = [FINISH_MODE_ASAP, FINISH_MODE_END_OF_NIGHT, FINISH_MODE_DEPARTUR
 KEY_TARGET_SOC = "target_soc"
 KEY_CURRENT_SOC = "current_soc"
 KEY_DEPARTURE = "departure_time"
-KEY_ENABLED = "smart_charging_enabled"
+KEY_BATTERY_CAPACITY = "battery_capacity"
+KEY_FINISH_MODE = "finish_mode"
+KEY_SESSION_ACTIVE = "session_active"
+KEY_START_SESSION = "start_session"
+KEY_STOP_SESSION = "stop_session"
 
 # --- Recommended actions (sensor states) ---
-ACTION_DISABLED = "disabled"
+ACTION_IDLE = "idle"
 ACTION_DONE = "done"
 ACTION_TOO_LATE = "too_late"
 ACTION_CHARGE_MAX = "charge_max_now"
@@ -88,4 +92,4 @@ PLAN_TOO_LATE = "too_late"
 PLAN_INSUFFICIENT_TIME = "insufficient_time"
 
 # Platforms to set up
-PLATFORMS = ["sensor", "number", "switch", "datetime"]
+PLATFORMS = ["sensor", "number", "datetime", "select", "button", "binary_sensor"]

@@ -7,6 +7,11 @@ time, target SoC, electricity tariff, and apartment load**. It tells your OCPP
 charger when to start, what current to draw, and when to stop — automatically
 prioritising the night tariff and protecting the apartment's main breaker.
 
+It runs as **single charging sessions**: you enter the inputs (battery capacity,
+current SoC, target SoC, departure, finish mode), press **Start**, and the
+integration drives the charger until the target is reached. Outside of a session
+the planner still shows what it *would* do, but never touches the charger.
+
 ## Features
 
 - **Departure-aware planning.** Tell it when you're leaving and the SoC you
@@ -22,9 +27,21 @@ prioritising the night tariff and protecting the apartment's main breaker.
 - **Exposes its decisions.** Read-only sensors let you see why charging is
   paused, throttled, or running at any given moment.
 
+## Running a session
+
+1. Open the integration's device card or the dashboard example below.
+2. Fill in (or accept the previous values):
+   - **Battery capacity** — kWh of your car's pack. Prefilled with the value you used last time.
+   - **Current SoC** — what the battery is at right now (or wire up an external SoC sensor in the options flow).
+   - **Target SoC** — what you want it charged to.
+   - **Departure time** — when you need the car ready.
+   - **Finish mode** — `asap`, `end_of_night`, or `departure`.
+3. Press **Start charging session**.
+4. The session ends automatically when the target SoC is reached, or when you press **Stop charging session**. Current SoC clears at end (since it'll be stale next trip); the other inputs persist for the next session.
+
 ## How it decides
 
-Every 30 seconds (and on relevant state changes) it:
+While a session is active, every 30 seconds (and on relevant state changes) it:
 
 1. Computes `energy_needed = (target_soc - current_soc) / 100 * battery_kwh * loss`.
 2. Computes how many hours of night tariff exist between now and departure.
@@ -83,6 +100,11 @@ so you can see when the integration plans to start. If anything triggers a
 deficit or pushes slack below the safety margin, all modes fall back to
 "charge now" — finish-mode is the polite default, not a hard schedule.
 
+The mode is also exposed as a writable `select.<name>_finish_mode` dropdown, so
+you can flip it per-trip from the dashboard or an automation without re-opening
+the integration's options flow. The select takes precedence over the config
+value once it has been set; the config-flow field acts as the initial seed.
+
 ## OCPP service payload
 
 When a current limit needs to be applied, the integration calls the configured
@@ -114,11 +136,17 @@ with theirs.
 
 ## Entities created
 
-**Writable inputs (you set these per trip):**
-- `number.<name>_target_soc`
+**Writable inputs (you set these per trip — last value is prefilled):**
+- `number.<name>_battery_capacity` (kWh)
 - `number.<name>_current_soc` (only when no external SoC sensor is configured)
+- `number.<name>_target_soc`
 - `datetime.<name>_departure_time`
-- `switch.<name>_smart_charging_enabled`
+- `select.<name>_finish_mode` — `asap`, `end_of_night`, or `departure`
+
+**Session controls:**
+- `button.<name>_start_charging_session`
+- `button.<name>_stop_charging_session`
+- `binary_sensor.<name>_charging_session_active`
 
 **Read-only sensors:**
 - `sensor.<name>_energy_needed` (kWh)
@@ -131,9 +159,9 @@ with theirs.
 - `sensor.<name>_day_charging_current` (A)
 - `sensor.<name>_available_current` (A) — apartment headroom for the EV
 - `sensor.<name>_dynamic_target_current` (A) — actual current pushed to the charger
-- `sensor.<name>_recommended_action` — one of: `disabled`, `done`, `too_late`,
-  `charge_max_now`, `charge_day_supplement`, `wait_for_night`,
-  `wait_for_start_time`
+- `sensor.<name>_recommended_action` — one of: `idle` (no active session),
+  `done`, `too_late`, `charge_max_now`, `charge_day_supplement`,
+  `wait_for_night`, `wait_for_start_time`
 - `sensor.<name>_throttle_reason` — `unrestricted`, `smart_charging_pause`,
   `apartment_load_too_high`, `throttled_by_apartment`
 - `sensor.<name>_plan_status` — `ok`, `already_at_target`, `too_late`,
@@ -151,15 +179,22 @@ with theirs.
 
 ## Lovelace example
 
+The entities are listed in the input order: capacity → current SoC → target →
+departure → finish mode → Start.
+
 ```yaml
 type: entities
 title: EV Charging
 entities:
-  - entity: switch.evpoint_charge_scheduler_smart_charging_enabled
-  - entity: datetime.evpoint_charge_scheduler_departure_time
-  - entity: number.evpoint_charge_scheduler_target_soc
+  - entity: number.evpoint_charge_scheduler_battery_capacity
   - entity: number.evpoint_charge_scheduler_current_soc
+  - entity: number.evpoint_charge_scheduler_target_soc
+  - entity: datetime.evpoint_charge_scheduler_departure_time
+  - entity: select.evpoint_charge_scheduler_finish_mode
+  - entity: button.evpoint_charge_scheduler_start_charging_session
+  - entity: button.evpoint_charge_scheduler_stop_charging_session
   - type: divider
+  - entity: binary_sensor.evpoint_charge_scheduler_charging_session_active
   - entity: sensor.evpoint_charge_scheduler_recommended_action
   - entity: sensor.evpoint_charge_scheduler_dynamic_target_current
   - entity: sensor.evpoint_charge_scheduler_throttle_reason

@@ -27,8 +27,8 @@ from homeassistant.util import dt as dt_util
 from .const import (
     ACTION_CHARGE_DAY_SUPPLEMENT,
     ACTION_CHARGE_MAX,
-    ACTION_DISABLED,
     ACTION_DONE,
+    ACTION_IDLE,
     ACTION_TOO_LATE,
     ACTION_WAIT_FOR_NIGHT,
     ACTION_WAIT_FOR_START_TIME,
@@ -120,9 +120,22 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         # These are updated by the entity classes when the user changes them
         # in the UI, and persisted via RestoreEntity.
         self.target_soc: float = DEFAULT_TARGET_SOC
-        self.current_soc: float | None = None  # None means "use external sensor"
+        self.current_soc: float | None = None  # None means "external sensor or unknown"
         self.departure_time: datetime | None = None
-        self.smart_charging_enabled: bool = True
+        # Seeded from the config entry; the writable entities override at runtime.
+        self.finish_mode: str = self._config.get(CONF_FINISH_MODE, DEFAULT_FINISH_MODE)
+        self.battery_capacity: float = float(
+            self._config.get(CONF_BATTERY_CAPACITY, DEFAULT_BATTERY_CAPACITY)
+        )
+
+        # Session state. The integration only pushes commands to the charger
+        # while a session is active; idle otherwise. The binary_sensor restores
+        # session state across HA restarts.
+        self.session_active: bool = False
+
+        # Reference to the manual current-SoC entity, set when that entity
+        # is registered. Allows the coordinator to clear it on session end.
+        self._current_soc_entity = None
 
         # Last applied charger state, used to avoid spamming the charger.
         self._last_applied_current: int | None = None
@@ -170,8 +183,34 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         self.departure_time = value
         await self.async_refresh()
 
-    async def async_set_enabled(self, value: bool) -> None:
-        self.smart_charging_enabled = bool(value)
+    async def async_set_finish_mode(self, value: str) -> None:
+        self.finish_mode = value
+        await self.async_refresh()
+
+    async def async_set_battery_capacity(self, value: float) -> None:
+        self.battery_capacity = float(value)
+        await self.async_refresh()
+
+    def register_current_soc_entity(self, entity) -> None:
+        """Called by the manual current-SoC number entity once it is added."""
+        self._current_soc_entity = entity
+
+    async def async_set_session_active(self, value: bool) -> None:
+        """Restore-path setter used by the session_active binary sensor."""
+        self.session_active = bool(value)
+        await self.async_refresh()
+
+    async def async_start_session(self) -> None:
+        """Begin a charging session using the current input values."""
+        self.session_active = True
+        await self.async_refresh()
+
+    async def async_end_session(self) -> None:
+        """End the current session and clear the manual current-SoC input."""
+        self.session_active = False
+        if self._current_soc_entity is not None:
+            await self._current_soc_entity.async_reset()
+        self.current_soc = None
         await self.async_refresh()
 
     # --- Main update loop ---
@@ -180,8 +219,9 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         cfg = self._config
         now = dt_util.now()
 
-        # Inputs
-        battery = float(cfg.get(CONF_BATTERY_CAPACITY, DEFAULT_BATTERY_CAPACITY))
+        # Inputs. battery_capacity is now a runtime-editable number entity;
+        # the config value just seeded its initial value on first install.
+        battery = float(self.battery_capacity)
         loss = float(cfg.get(CONF_CHARGING_LOSS, DEFAULT_CHARGING_LOSS))
         voltage = float(cfg.get(CONF_VOLTAGE, DEFAULT_VOLTAGE))
         phases = int(cfg.get(CONF_PHASES, DEFAULT_PHASES))
@@ -260,7 +300,9 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         # asap:          target_finish = now (charge immediately when allowed)
         # end_of_night:  target_finish = the latest occurrence of night_end before departure
         # departure:     target_finish = the departure time itself
-        finish_mode = cfg.get(CONF_FINISH_MODE, DEFAULT_FINISH_MODE)
+        # The active value lives on the coordinator so the select entity can
+        # change it without an integration reload.
+        finish_mode = self.finish_mode
         charge_duration_hours = (energy_needed / max_kw) if max_kw > 0 else 0.0
         if finish_mode == FINISH_MODE_END_OF_NIGHT and self.departure_time is not None:
             target_finish = self._latest_night_end_before(self.departure_time, night_end)
@@ -277,9 +319,10 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             latest_start = now  # charge immediately under asap (or fallback)
         should_have_started = now >= latest_start
 
-        # Decide recommended action
-        if not self.smart_charging_enabled:
-            action = ACTION_DISABLED
+        # Decide recommended action. No session = idle: we still compute the
+        # plan for the dashboard, but never push to the charger.
+        if not self.session_active:
+            action = ACTION_IDLE
         elif energy_needed <= 0:
             action = ACTION_DONE
         elif hours_to_dep <= 0:
@@ -361,6 +404,11 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         # Push commands to charger only on change (and only for the wired-up parts)
         await self._apply_to_charger(dynamic_current)
 
+        # Auto-end the session when the target SoC is reached. Fire-and-forget
+        # so we don't recurse into ourselves; the next cycle picks up IDLE.
+        if self.session_active and action == ACTION_DONE:
+            self.hass.async_create_task(self.async_end_session())
+
         return {
             "energy_needed": round(energy_needed, 2),
             "hours_to_departure": round(hours_to_dep, 3),
@@ -385,6 +433,8 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             "load_balancing_active": load_balancing_active,
             "control_mode": control_mode,
             "finish_mode": finish_mode,
+            "battery_capacity": round(battery, 2),
+            "session_active": self.session_active,
             "charge_duration_hours": round(charge_duration_hours, 3),
             "latest_start_time": latest_start if target_finish is not None else None,
         }
