@@ -216,7 +216,7 @@ git tag vX.Y.Z && git push --tags
 
 - **`datetime.py` is the HA platform filename.** It clashes with Python's `datetime` stdlib module, but HA's package loader handles the namespace correctly — `from datetime import datetime, time, timedelta` inside the file works fine because it's a package-relative absolute import. Don't rename the file.
 - **`safety_margin_hours` is in hours**, not minutes (e.g., `0.5` = 30 min). Easy to misread.
-- **`_latest_night_end_before` can return a time in the past.** Coordinator handles this by treating `now >= latest_start` as "should be charging now" — works correctly without explicit checks.
+- **`_latest_night_end_before` only returns a future time** (within `(now, target]`) or `None`. The caller in `end_of_night` mode falls back to `departure_time` when there is no future night_end before departure, so `target_finish` and `latest_start` are never in the past.
 - **`chargingProfileId` is reused across pushes.** This is intentional (replaces previous profile), but means colliding with other OCPP automations on the same charger silently overwrites their profile. Document this in your release notes if relevant.
 - **Per-phase vs total amp limits.** The `total_current_limit` config value is assumed per-phase if the user is on 3-phase (most apartment main breakers trip per phase). The math doesn't multiply by phase count.
 - **HACS structure error "Repository structure for main is not compliant"** = `hacs.json` is not at the actual repo root, or there's extra folder nesting. Common when someone commits the entire `evpoint-charge-scheduler/` directory as a subfolder instead of its contents.

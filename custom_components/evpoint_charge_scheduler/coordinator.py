@@ -302,14 +302,21 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
 
         # Resolve the finish-mode strategy and compute the latest start time.
         # asap:          target_finish = now (charge immediately when allowed)
-        # end_of_night:  target_finish = the latest occurrence of night_end before departure
+        # end_of_night:  target_finish = the next future occurrence of night_end at or before departure (falls back to departure if none fits)
         # departure:     target_finish = the departure time itself
         # The active value lives on the coordinator so the select entity can
         # change it without an integration reload.
         finish_mode = self.finish_mode
         charge_duration_hours = (energy_needed / max_kw) if max_kw > 0 else 0.0
         if finish_mode == FINISH_MODE_END_OF_NIGHT and self.departure_time is not None:
-            target_finish = self._latest_night_end_before(self.departure_time, night_end)
+            target_finish = self._latest_night_end_before(
+                self.departure_time, night_end, now
+            )
+            # No future night_end fits between now and departure — degrade
+            # to finishing exactly at departure instead of aiming at a past
+            # night_end (which would make latest_start nonsensical).
+            if target_finish is None:
+                target_finish = self.departure_time
         elif finish_mode == FINISH_MODE_DEPARTURE and self.departure_time is not None:
             target_finish = self.departure_time
         else:
@@ -466,11 +473,15 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         return tod >= ns or tod < ne
 
     @staticmethod
-    def _latest_night_end_before(target: datetime, night_end_time: time) -> datetime:
-        """Most recent occurrence of `night_end_time` strictly before `target`.
+    def _latest_night_end_before(
+        target: datetime, night_end_time: time, now: datetime
+    ) -> datetime | None:
+        """Latest occurrence of `night_end_time` in the open interval (now, target].
 
         Used by finish_mode = end_of_night to compute when the charge should
-        wrap up — typically the morning of the departure.
+        wrap up — typically the morning of the departure. Returns None if no
+        such occurrence exists (i.e. the next night_end is after departure),
+        so callers can fall back to a different target.
         """
         candidate = target.replace(
             hour=night_end_time.hour,
@@ -478,8 +489,10 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             second=0,
             microsecond=0,
         )
-        if candidate >= target:
+        if candidate > target:
             candidate -= timedelta(days=1)
+        if candidate <= now:
+            return None
         return candidate
 
     @staticmethod
