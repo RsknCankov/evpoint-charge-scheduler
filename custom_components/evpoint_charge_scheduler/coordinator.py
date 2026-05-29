@@ -548,6 +548,12 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
                     - startPeriod: 0
                       limit: <dynamic_current>
 
+        The profile is also pushed with `limit: 0` when a session ends,
+        so the charger stops drawing immediately rather than holding the
+        last non-zero limit. The OCPP push goes out before the switch
+        turn_off so the charger sees the zero-amp cap before the
+        transaction stops.
+
         Each side (current-limit service and start/stop switch) is independently
         optional. If neither is configured, the integration runs in pure
         advisory mode.
@@ -563,13 +569,17 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         factor = math.sqrt(3) if phases >= 3 else 1.0
         should_run = dynamic_current > 0
 
-        # Push the charging profile (both service and devid required for this path)
-        if (
+        # Push the charging profile on every change in the dynamic current,
+        # including transitions to 0 — so the charger stops as soon as the
+        # session ends. Skip the startup no-op (None → 0): nothing to say
+        # when we've never pushed and aren't asking for current.
+        push_ocpp = (
             service_call
             and devid
-            and should_run
             and dynamic_current != self._last_applied_current
-        ):
+            and not (dynamic_current == 0 and self._last_applied_current is None)
+        )
+        if push_ocpp:
             try:
                 limit_watts = int(round(factor * voltage * dynamic_current))
                 domain, service = service_call.split(".", 1)

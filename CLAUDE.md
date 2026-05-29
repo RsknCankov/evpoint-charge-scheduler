@@ -22,7 +22,7 @@ One `DataUpdateCoordinator` (`coordinator.py`) running every 30 seconds + immedi
 1. **Smart planner** computes when and at what rate to charge. Decides based on energy needed, time to departure, night-tariff hours available, deficit, and the configured finish mode.
 2. **Load balancer** caps the planner's target current by `total_limit - headroom - apartment_current`. Apartment always wins.
 
-The planner produces `dynamic_target_current` (an integer in amps); the coordinator's `_apply_to_charger` method sends it via an OCPP `set_charge_rate` service call and toggles the configured charger switch on/off. Both are idempotent — commands are only sent when the value changes.
+The planner produces `dynamic_target_current` (an integer in amps); the coordinator's `_apply_to_charger` method sends it via an OCPP `set_charge_rate` service call and toggles the configured charger switch on/off. Both are idempotent — commands are only sent when the value changes. The OCPP profile is pushed even when the current drops to 0, so the charger stops as soon as a session ends instead of holding the previous non-zero cap.
 
 Everything else in the integration (number/datetime/switch entities, sensors, config flow) is plumbing around the coordinator.
 
@@ -210,7 +210,7 @@ git tag vX.Y.Z && git push --tags
 - **No `vol.Required` for entity selectors** — the user might want to use the integration with only a subset of features wired up.
 - **`strings.json` is the canonical source**; `translations/en.json` is a copy. Edit the former, copy to the latter.
 - **`device_info` is identical across all entities** — they all belong to one HA device named "EVPoint Charge Scheduler", identified by `(DOMAIN, entry.entry_id)`.
-- **Idempotent service calls**: the coordinator tracks `_last_applied_current` and `_last_applied_running`. Only push to the charger when the value changes.
+- **Idempotent service calls**: the coordinator tracks `_last_applied_current` and `_last_applied_running`. Only push to the charger when the value changes. A push with `limit: 0` is sent on session end (transition from a non-zero current) — required for `current_only` mode where no switch is wired and the charger would otherwise keep drawing at the last cap.
 
 ## Gotchas
 
