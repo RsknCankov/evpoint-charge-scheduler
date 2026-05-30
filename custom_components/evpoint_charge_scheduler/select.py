@@ -68,6 +68,9 @@ class FinishModeSelect(SelectEntity, RestoreEntity):
     async def async_select_option(self, option: str) -> None:
         if option not in FINISH_MODES:
             return
+        if self._coordinator.session_active:
+            self.async_write_ha_state()  # locked during a session — revert UI
+            return
         self._attr_current_option = option
         await self._coordinator.async_set_finish_mode(option)
         self.async_write_ha_state()

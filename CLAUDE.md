@@ -22,7 +22,7 @@ One `DataUpdateCoordinator` (`coordinator.py`) running every 30 seconds + immedi
 1. **Smart planner** computes when and at what rate to charge. Decides based on energy needed, time to departure, night-tariff hours available, deficit, and the configured finish mode.
 2. **Load balancer** caps the planner's target current by `total_limit - headroom - apartment_current`. Apartment always wins.
 
-The planner produces `dynamic_target_current` (an integer in amps); the coordinator's `_apply_to_charger` method sends it via an OCPP `set_charge_rate` service call and toggles the configured charger switch on/off. Both are idempotent — commands are only sent when the value changes. The OCPP profile is pushed even when the current drops to 0, so the charger stops as soon as a session ends instead of holding the previous non-zero cap.
+The planner produces `dynamic_target_current` (an integer in amps); the coordinator's `_apply_to_charger` method sends it via an OCPP `set_charge_rate` service call and toggles the configured charger switch on/off. Both are idempotent — commands are only sent when the value changes. How a session is stopped depends on whether a charger switch is configured: with a switch, the switch turn_off stops charging and the redundant 0-amp push is suppressed; without a switch (`current_only` mode), the OCPP profile is pushed with `limit: 0` so the charger stops as soon as a session ends instead of holding the previous non-zero cap.
 
 Everything else in the integration (number/datetime/switch entities, sensors, config flow) is plumbing around the coordinator.
 
@@ -73,6 +73,7 @@ Checked top to bottom; first match wins:
 - `binary_sensor.session_active` (RestoreEntity) restores `coordinator.session_active` on startup, so a mid-charge HA restart resumes the session.
 - `button.start_session` → `coordinator.async_start_session()` flips `session_active=True` and triggers a refresh. There's no input snapshot — the entities are authoritative on every cycle.
 - `button.stop_session` and the auto-end on `ACTION_DONE` both call `coordinator.async_end_session()`, which clears `self.current_soc` and resets the manual current-SoC number entity (when present). Auto-end is fire-and-forget via `hass.async_create_task` to avoid recursing inside `_async_update_data`.
+- **Inputs are locked while a session is active.** The writable entities (`number.battery_capacity`, `number.target_soc`, `number.current_soc`, `datetime.departure_time`, `select.finish_mode`) guard their write methods on `coordinator.session_active`: if a session is running, the edit is ignored and `async_write_ha_state()` is called to snap the UI back to the running value. The restore paths in `async_added_to_hass` and the coordinator's restore-path setters are *not* guarded, so a mid-charge restart still resumes correctly. Stop the session to change inputs.
 
 ### Key derived values
 
@@ -210,7 +211,7 @@ git tag vX.Y.Z && git push --tags
 - **No `vol.Required` for entity selectors** — the user might want to use the integration with only a subset of features wired up.
 - **`strings.json` is the canonical source**; `translations/en.json` is a copy. Edit the former, copy to the latter.
 - **`device_info` is identical across all entities** — they all belong to one HA device named "EVPoint Charge Scheduler", identified by `(DOMAIN, entry.entry_id)`.
-- **Idempotent service calls**: the coordinator tracks `_last_applied_current` and `_last_applied_running`. Only push to the charger when the value changes. A push with `limit: 0` is sent on session end (transition from a non-zero current) — required for `current_only` mode where no switch is wired and the charger would otherwise keep drawing at the last cap.
+- **Idempotent service calls**: the coordinator tracks `_last_applied_current` and `_last_applied_running`. Only push to the charger when the value changes. On a drop to 0: if a charger switch is configured, the 0-amp push is suppressed (`stop_via_switch`) and the switch turn_off does the stopping — but `_last_applied_current` is still reset to 0 so the next non-zero target re-pushes the profile on resume. If no switch is wired (`current_only` mode), a push with `limit: 0` is sent on session end, since the charger would otherwise keep drawing at the last cap.
 
 ## Gotchas
 

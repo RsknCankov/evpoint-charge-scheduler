@@ -548,11 +548,12 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
                     - startPeriod: 0
                       limit: <dynamic_current>
 
-        The profile is also pushed with `limit: 0` when a session ends,
-        so the charger stops drawing immediately rather than holding the
-        last non-zero limit. The OCPP push goes out before the switch
-        turn_off so the charger sees the zero-amp cap before the
-        transaction stops.
+        Stopping depends on whether a charger switch is configured. If a
+        switch is wired, charging is stopped by the switch turn_off and the
+        redundant `limit: 0` push is suppressed. If no switch is configured
+        (current_only mode), the profile is pushed with `limit: 0` when the
+        session ends so the charger stops drawing immediately rather than
+        holding the last non-zero limit.
 
         Each side (current-limit service and start/stop switch) is independently
         optional. If neither is configured, the integration runs in pure
@@ -569,15 +570,23 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         factor = math.sqrt(3) if phases >= 3 else 1.0
         should_run = dynamic_current > 0
 
+        # When a charger switch is wired, the switch turn_off stops charging,
+        # so the redundant limit_amps:0 push is suppressed — the switch is the
+        # stop mechanism. Without a switch, the 0-amp push is the only way to
+        # stop (current_only mode), so it still goes out.
+        stop_via_switch = dynamic_current == 0 and bool(switch_entity)
+
         # Push the charging profile on every change in the dynamic current,
         # including transitions to 0 — so the charger stops as soon as the
         # session ends. Skip the startup no-op (None → 0): nothing to say
-        # when we've never pushed and aren't asking for current.
+        # when we've never pushed and aren't asking for current. Also skip the
+        # drop-to-0 push when a switch will handle the stop.
         push_ocpp = (
             service_call
             and devid
             and dynamic_current != self._last_applied_current
             and not (dynamic_current == 0 and self._last_applied_current is None)
+            and not stop_via_switch
         )
         if push_ocpp:
             try:
@@ -610,6 +619,11 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
                 )
             except Exception as err:
                 _LOGGER.error("Failed to set charge rate: %s", err)
+        elif stop_via_switch and self._last_applied_current not in (None, 0):
+            # We let the switch stop charging instead of pushing limit:0.
+            # Record the effective stop so the next non-zero target re-pushes
+            # the profile when charging resumes.
+            self._last_applied_current = 0
 
         # Start / stop the charger transaction if we have a switch to toggle
         if switch_entity and should_run != self._last_applied_running:

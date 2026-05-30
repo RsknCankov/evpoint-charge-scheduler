@@ -39,6 +39,8 @@ the planner still shows what it *would* do, but never touches the charger.
 3. Press **Start charging session**.
 4. The session ends automatically when the target SoC is reached, or when you press **Stop charging session**. Current SoC clears at end (since it'll be stale next trip); the other inputs persist for the next session.
 
+> While a session is active the inputs above (battery capacity, current SoC, target SoC, departure time, finish mode) are **locked** — edits are ignored and snap back to the running value. Press **Stop charging session** to change them.
+
 ## How it decides
 
 While a session is active, every 30 seconds (and on relevant state changes) it:
@@ -74,7 +76,7 @@ as you have wired up and the integration degrades gracefully:
 | **Tariff sensor** | Night vs day is derived from the configured night-start / night-end clock window. |
 | **Apartment current sensor** | Load balancing is disabled — the charger uses the full configured limit. |
 | **Car SoC sensor** | A manual `Current SoC` number entity is created for you to keep up to date. |
-| **Charger switch entity** | The integration sets the current limit but doesn't start/stop the transaction. |
+| **Charger switch entity** | The integration sets the current limit but doesn't start/stop the transaction. When a switch **is** configured, charging is stopped by switching it off, and the integration skips the redundant 0-amp OCPP push. When it's omitted, the session is stopped by pushing a `limit_amps: 0` OCPP profile instead. |
 | **OCPP service / devid** | "Advisory mode" — decisions are exposed via sensors but no commands are sent. Both the service name **and** the OCPP `devid` must be set for the integration to push charging profiles; missing either disables that path. Hook your own automations onto `sensor.dynamic_target_current` / `sensor.recommended_action`. |
 
 Other fields (battery capacity, voltage, phases, min/max current, total

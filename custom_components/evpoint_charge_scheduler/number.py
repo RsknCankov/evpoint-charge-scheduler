@@ -79,6 +79,9 @@ class TargetSoCNumber(_EVPercentBase):
     _attr_native_min_value = 10
 
     async def async_set_native_value(self, value: float) -> None:
+        if self._coordinator.session_active:
+            self.async_write_ha_state()  # locked during a session — revert UI
+            return
         self._attr_native_value = value
         await self._push_to_coordinator()
         self.async_write_ha_state()
@@ -99,6 +102,9 @@ class CurrentSoCNumber(_EVPercentBase):
         self._coordinator.register_current_soc_entity(self)
 
     async def async_set_native_value(self, value: float) -> None:
+        if self._coordinator.session_active:
+            self.async_write_ha_state()  # locked during a session — revert UI
+            return
         self._attr_native_value = value
         await self._push_to_coordinator()
         self.async_write_ha_state()
@@ -158,6 +164,9 @@ class BatteryCapacityNumber(NumberEntity, RestoreEntity):
         await self._coordinator.async_set_battery_capacity(self._attr_native_value)
 
     async def async_set_native_value(self, value: float) -> None:
+        if self._coordinator.session_active:
+            self.async_write_ha_state()  # locked during a session — revert UI
+            return
         self._attr_native_value = value
         await self._coordinator.async_set_battery_capacity(value)
         self.async_write_ha_state()

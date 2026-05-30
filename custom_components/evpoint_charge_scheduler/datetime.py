@@ -56,6 +56,9 @@ class DepartureDateTime(DateTimeEntity, RestoreEntity):
         await self._coordinator.async_set_departure(self._attr_native_value)
 
     async def async_set_value(self, value: datetime) -> None:
+        if self._coordinator.session_active:
+            self.async_write_ha_state()  # locked during a session — revert UI
+            return
         # HA passes UTC; keep as-is, coordinator uses dt_util.now() for comparison
         self._attr_native_value = value
         await self._coordinator.async_set_departure(value)
