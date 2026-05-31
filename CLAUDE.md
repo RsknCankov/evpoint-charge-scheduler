@@ -239,6 +239,7 @@ git tag vX.Y.Z && git push --tags
 - **Per-phase vs total amp limits.** The `total_current_limit` config value is assumed per-phase if the user is on 3-phase (most apartment main breakers trip per phase). The math doesn't multiply by phase count.
 - **HACS structure error "Repository structure for main is not compliant"** = `hacs.json` is not at the actual repo root, or there's extra folder nesting. Common when someone commits the entire `evpoint-charge-scheduler/` directory as a subfolder instead of its contents.
 - **Brand icons in `brands/` don't auto-show in HA.** They must be submitted via PR to `home-assistant/brands` under `custom_integrations/evpoint_charge_scheduler/` to appear in the HA UI and HACS listing. Until then, the integration shows a generic placeholder; functionality is unaffected.
+- **Never set `self.config_entry` in `OptionsFlow.__init__`.** Modern HA cores make `OptionsFlow.config_entry` a read-only property; assigning it raises and surfaces as a **500 Internal Server Error** when the user opens *Configure*. `async_get_options_flow` should `return OptionsFlow()` (no arg) and the flow accesses `self.config_entry` via the inherited property. (Fixed in v0.7.1.)
 - **`SensorDeviceClass.TIMESTAMP` requires timezone-aware datetimes.** The coordinator uses `dt_util.now()` and preserves tzinfo via `replace()`, so `latest_start_time` (now `gentle_start`, derived from `target_finish`) is always tz-aware. Don't introduce naïve datetimes.
 
 ## Quick reference: action states

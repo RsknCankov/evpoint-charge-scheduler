@@ -146,14 +146,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        return OptionsFlow(config_entry)
+        return OptionsFlow()
 
 
 class OptionsFlow(config_entries.OptionsFlow):
-    """Allow editing config after setup."""
+    """Allow editing config after setup.
 
-    def __init__(self, config_entry) -> None:
-        self.config_entry = config_entry
+    `self.config_entry` is provided automatically by the base OptionsFlow in
+    modern HA — do NOT set it in __init__ (recent cores made it a read-only
+    property, and assigning it raises, which surfaces as a 500 when opening
+    the options form).
+    """
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
