@@ -24,6 +24,7 @@ from .const import (
     CONF_OCPP_SET_RATE_SERVICE,
     CONF_CHARGING_PROFILE_ID,
     CONF_PHASES,
+    CONF_PRICE_SENSOR,
     CONF_SAFETY_MARGIN_HOURS,
     CONF_SOC_SENSOR,
     CONF_TARIFF_SENSOR,
@@ -69,6 +70,10 @@ def _build_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             #   - No OCPP service        -> "advisory mode": decisions exposed via sensors
             vol.Optional(CONF_TARIFF_SENSOR, default=d.get(CONF_TARIFF_SENSOR, vol.UNDEFINED)): _entity_selector("sensor"),
             vol.Optional(CONF_NIGHT_TARIFF_VALUE, default=d.get(CONF_NIGHT_TARIFF_VALUE, DEFAULT_NIGHT_TARIFF_VALUE)): str,
+            # Optional electricity price sensor. Used to learn day vs night
+            # prices from history so end_of_night can trade a little extra cost
+            # for gentler (slower) charging within the user's budget.
+            vol.Optional(CONF_PRICE_SENSOR, default=d.get(CONF_PRICE_SENSOR, vol.UNDEFINED)): _entity_selector("sensor"),
             vol.Optional(CONF_APARTMENT_CURRENT_SENSOR, default=d.get(CONF_APARTMENT_CURRENT_SENSOR, vol.UNDEFINED)): _entity_selector("sensor"),
             vol.Optional(CONF_SOC_SENSOR, default=d.get(CONF_SOC_SENSOR, vol.UNDEFINED)): _entity_selector("sensor"),
             vol.Optional(CONF_CHARGER_SWITCH, default=d.get(CONF_CHARGER_SWITCH, vol.UNDEFINED)): _entity_selector("switch"),

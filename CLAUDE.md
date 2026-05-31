@@ -41,8 +41,8 @@ evpoint-charge-scheduler/
         ├── const.py                ← all constants, defaults, action states
         ├── coordinator.py          ← the brain — all planner + load balancer math
         ├── config_flow.py          ← config wizard + options flow
-        ├── sensor.py               ← read-only sensors (~20 of them)
-        ├── number.py               ← writable battery_capacity, target_soc, current_soc inputs
+        ├── sensor.py               ← read-only sensors (~23 of them)
+        ├── number.py               ← writable battery_capacity, target_soc, current_soc, cost_tolerance inputs
         ├── datetime.py             ← writable departure_time input
         ├── select.py               ← writable finish_mode dropdown
         ├── button.py               ← start/stop session buttons
@@ -66,7 +66,7 @@ Checked top to bottom; first match wins:
 7. `finish_mode == end_of_night` → `wait_for_night` if currently day; `charge_gentle` if currently night and `now >= gentle_start`; `wait_for_start_time` if currently night but too early.
 8. `finish_mode == asap` (default) → `charge_max_now` if currently night, else `wait_for_night`.
 
-`charge_gentle` (steps 6–7) charges at the slowest current that still finishes by the mode's deadline (`gentle_current`), spreading across the window instead of bursting at max. `asap` is the only mode that still bursts at `max_a`. The deficit (4) and safety (5) overrides still win, so gentle charging only applies when there's genuine slack. `gentle_current`/`gentle_start` are produced by `_compute_gentle_plan`: `departure` spreads over all time to departure; `end_of_night` spreads over the remaining night hours only.
+`charge_gentle` (steps 6–7) charges at the slowest current that still finishes by the mode's deadline (`gentle_current`), spreading across the window instead of bursting at max. `asap` is the only mode that still bursts at `max_a`. The deficit (4) and safety (5) overrides still win, so gentle charging only applies when there's genuine slack. `gentle_current`/`gentle_start` are produced by `_compute_gentle_plan`: `departure` spreads over all time to departure; `end_of_night` spreads over the remaining night hours only — **unless** a price is learned and `cost_tolerance_pct > 0`, in which case `_gentle_current_within_budget` lets it spill past night-end into day tariff for an even slower current, capped by the cost budget (see "Cost-aware slow charging").
 
 `finish_mode` lives on the coordinator (`self.finish_mode`) and is driven by the writable `select.finish_mode` entity. The config-flow field only seeds the initial value at install time; once the select is set, it overrides on every cycle. `battery_capacity` follows the same pattern via `number.battery_capacity`.
 
@@ -75,7 +75,7 @@ Checked top to bottom; first match wins:
 - `binary_sensor.session_active` (RestoreEntity) restores `coordinator.session_active` on startup, so a mid-charge HA restart resumes the session.
 - `button.start_session` → `coordinator.async_start_session()` flips `session_active=True` and triggers a refresh. There's no input snapshot — the entities are authoritative on every cycle.
 - `button.stop_session` and the auto-end on `ACTION_DONE` both call `coordinator.async_end_session()`, which clears `self.current_soc` and resets the manual current-SoC number entity (when present). Auto-end is fire-and-forget via `hass.async_create_task` to avoid recursing inside `_async_update_data`.
-- **Inputs are locked while a session is active.** The writable entities (`number.battery_capacity`, `number.target_soc`, `number.current_soc`, `datetime.departure_time`, `select.finish_mode`) guard their write methods on `coordinator.session_active`: if a session is running, the edit is ignored and `async_write_ha_state()` is called to snap the UI back to the running value. The restore paths in `async_added_to_hass` and the coordinator's restore-path setters are *not* guarded, so a mid-charge restart still resumes correctly. Stop the session to change inputs.
+- **Inputs are locked while a session is active.** The writable entities (`number.battery_capacity`, `number.target_soc`, `number.current_soc`, `number.cost_tolerance`, `datetime.departure_time`, `select.finish_mode`) guard their write methods on `coordinator.session_active`: if a session is running, the edit is ignored and `async_write_ha_state()` is called to snap the UI back to the running value. The restore paths in `async_added_to_hass` and the coordinator's restore-path setters are *not* guarded, so a mid-charge restart still resumes correctly. Stop the session to change inputs.
 
 ### Key derived values
 
@@ -95,6 +95,12 @@ Checked top to bottom; first match wins:
 When a tariff sensor is configured, `_async_learn_night_window` reads the sensor's recorder history (last `NIGHT_WINDOW_LEARN_DAYS` = 14 days) via `get_instance(hass).async_add_executor_job(state_changes_during_period, …)` — recorder queries are blocking, so they must run in the recorder executor, never inline in `_async_update_data`. It collects the local time-of-day of each day→night transition (`night_start`) and night→day transition (`night_end`), then stores the `_circular_median_time` of each (circular because times-of-day wrap at midnight). Runs once at startup and on a daily `async_track_time_interval`; unsubscribed in `async_shutdown`.
 
 `_async_update_data` prefers `self._learned_night_start`/`_learned_night_end` over the configured clock values for **all** clock-based math (night_hours_available, deficit, gentle window, `_latest_night_end_before`). It does **not** affect `is_night_now` when a sensor is configured — the sensor stays authoritative for the live state; learning only sharpens the look-ahead. Needs ≥2 clean transitions per side or it stays `None` and falls back to config. Surfaced via `sensor.night_window_source` (`learned`/`configured`) and `sensor.learned_night_start`/`_end`.
+
+### Cost-aware slow charging
+
+When a price sensor (`CONF_PRICE_SENSOR`) is configured, `_async_learn_prices` (run after the window learner in the same daily `_async_daily_learn`) reads its history and buckets each sample into night vs day by the learned/configured window, storing the median of each as `_learned_night_price`/`_learned_day_price`. Both buckets must be non-empty or prices stay `None`.
+
+With prices learned and `cost_tolerance_pct > 0`, `end_of_night` calls `_gentle_current_within_budget`: baseline cost charges the unavoidable `deficit_kwh` in day tariff and the rest at night; budget = `baseline × (1 + tol)`. Charging starts now (night-open) and a slower current pushes the finish later into day tariff, so cost rises as current drops. Scanning `min_a → max_a`, the first current that finishes by departure *and* stays within budget is the slowest acceptable one. **Only the day/night price ratio actually matters** (absolute prices cancel), but the code uses the learned prices directly for readability. The writable `number.cost_tolerance` (%, default `DEFAULT_COST_TOLERANCE_PCT = 15`) feeds `self.cost_tolerance_pct`; it's only created when a price sensor is configured and is locked during a session like the other inputs. Surfaced via `sensor.price_source` (`learned`/`pending`/`none`) and `sensor.learned_night_price`/`_day_price`.
 
 ### Load balancing
 
@@ -141,6 +147,7 @@ Every external entity in the config flow is `vol.Optional`. The coordinator fall
 | --- | --- |
 | Tariff sensor | Derive `is_night_now` from `night_start`/`night_end` clock window. `sensor.tariff_source` reports `schedule` instead of `sensor`. No history to learn from, so the configured clock values are used directly. |
 | Recorder / tariff sensor not recorded / <2 days history | The night-window learner (`_async_learn_night_window`) leaves `_learned_night_start`/`_learned_night_end` as `None`; the configured clock values are used. `sensor.night_window_source` reports `configured` instead of `learned`. Logged at `debug`. |
+| Price sensor | No cost-aware slow charging. `end_of_night` spreads over the night window only (never into day). The `cost_tolerance` number entity isn't created. `sensor.price_source` reports `none`. If configured but one price bucket is empty / no history, `_learned_*_price` stay `None` and `price_source` reports `pending`. |
 | Apartment current sensor | Assume 0 A apartment load; load balancing is effectively disabled. `load_balancing_active` reports `False`. |
 | SoC sensor | The `current_soc` number entity is created instead; user updates it manually. |
 | Charger switch | Skip turn_on/turn_off calls. Integration still pushes the OCPP profile. |

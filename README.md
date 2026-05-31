@@ -39,7 +39,7 @@ the planner still shows what it *would* do, but never touches the charger.
 3. Press **Start charging session**.
 4. The session ends automatically when the target SoC is reached, or when you press **Stop charging session**. Current SoC clears at end (since it'll be stale next trip); the other inputs persist for the next session.
 
-> While a session is active the inputs above (battery capacity, current SoC, target SoC, departure time, finish mode) are **locked** — edits are ignored and snap back to the running value. Press **Stop charging session** to change them.
+> While a session is active the inputs above (battery capacity, current SoC, target SoC, departure time, finish mode, and the slow-charging cost budget) are **locked** — edits are ignored and snap back to the running value. Press **Stop charging session** to change them.
 
 ## How it decides
 
@@ -80,6 +80,7 @@ as you have wired up and the integration degrades gracefully:
 | --- | --- |
 | **Tariff sensor** | Night vs day is derived from the configured night-start / night-end clock window. When a tariff sensor **is** configured, the integration also learns the real night window from its recorder history (refreshed daily) and uses that for all planning math — see "Learned night window" below. |
 | **Apartment current sensor** | Load balancing is disabled — the charger uses the full configured limit. |
+| **Price sensor** | Cost-aware slow charging is disabled. `end_of_night` spreads over the night window only (never into day tariff). With a price sensor configured, the integration learns day/night prices from its history and `end_of_night` may charge even slower into the day, within your cost budget — see "Cost-aware slow charging" below. |
 | **Car SoC sensor** | A manual `Current SoC` number entity is created for you to keep up to date. |
 | **Charger switch entity** | The integration sets the current limit but doesn't start/stop the transaction. When a switch **is** configured, charging is stopped by switching it off, and the integration skips the redundant 0-amp OCPP push. When it's omitted, the session is stopped by pushing a `limit_amps: 0` OCPP profile instead. |
 | **OCPP service / devid** | "Advisory mode" — decisions are exposed via sensors but no commands are sent. Both the service name **and** the OCPP `devid` must be set for the integration to push charging profiles; missing either disables that path. Hook your own automations onto `sensor.dynamic_target_current` / `sensor.recommended_action`. |
@@ -134,6 +135,38 @@ you which is currently in use, and `sensor.<name>_learned_night_start` /
 comes straight from the sensor; the learned window only improves the planner's
 look-ahead.
 
+## Cost-aware slow charging
+
+By default `end_of_night` spreads the charge over the **night window only** — it
+never deliberately charges into the more expensive day tariff. But charging
+slower is gentler on the battery and the supply cable, and sometimes you can go
+slower for only a little more money by letting the charge spill a bit past
+night-end.
+
+If you configure an **electricity price sensor**, the integration learns your
+typical night and day prices from its history (bucketed against the learned
+night window, refreshed daily) and lets `end_of_night` trade a little cost for a
+slower current — but only up to a budget you control. The
+`number.<name>_slow_charging_cost_budget` input (a percentage, default **15%**)
+caps how much more than the cheapest plan it will pay. The planner then picks
+the **slowest** current that both finishes by departure and stays within that
+budget.
+
+Example: 40 kWh needed, night 23:00–07:00, night €0.10/kWh, day €0.25/kWh, 15%
+budget. Charging at max would finish around 03:00 entirely on night tariff
+(€4.00). Instead the planner drops to ~12 A, finishing ~07:20 with a little
+spilling into the morning day rate — €4.26, a 6.5% increase, well inside the 15%
+budget — for a much gentler charge. Going slower still (11 A) would cost 18.5%
+more, so it's rejected.
+
+Like the other inputs, the cost-budget number is **locked while a session is
+active** (set it before pressing Start), and it's only created when a price
+sensor is configured. `sensor.<name>_price_source` reports `learned`, `pending`
+(sensor configured, not enough history yet), or `none`. Deficit and
+safety-margin overrides still take priority — a tight schedule always charges at
+max regardless of the budget. `departure` mode is unaffected: it already spreads
+across all available time (you opted into day charging by choosing it).
+
 ## OCPP service payload
 
 When a current limit needs to be applied, the integration calls the configured
@@ -171,6 +204,8 @@ with theirs.
 - `number.<name>_target_soc`
 - `datetime.<name>_departure_time`
 - `select.<name>_finish_mode` — `asap`, `end_of_night`, or `departure`
+- `number.<name>_slow_charging_cost_budget` (%) — only when a price sensor is
+  configured; how much more than the cheapest plan to spend for gentler charging
 
 **Session controls:**
 - `button.<name>_start_charging_session`
@@ -207,6 +242,10 @@ with theirs.
   `unavailable` until enough history exists
 - `sensor.<name>_night_window_source` — `learned` when the planner is using the
   history-derived window, `configured` when falling back to the clock values
+- `sensor.<name>_learned_night_price` / `sensor.<name>_learned_day_price` — the
+  night/day prices learned from the price sensor's history
+- `sensor.<name>_price_source` — `learned`, `pending` (price sensor configured
+  but not enough history yet), or `none` (no price sensor)
 - `sensor.<name>_finish_mode` — the currently active finish mode (`asap`,
   `end_of_night`, or `departure`)
 - `sensor.<name>_latest_start_time` — when charging is planned to begin under

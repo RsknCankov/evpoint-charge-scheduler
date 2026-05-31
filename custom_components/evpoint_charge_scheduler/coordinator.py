@@ -51,6 +51,7 @@ from .const import (
     CONF_OCPP_SET_RATE_SERVICE,
     CONF_CHARGING_PROFILE_ID,
     CONF_PHASES,
+    CONF_PRICE_SENSOR,
     CONF_SAFETY_MARGIN_HOURS,
     CONF_SOC_SENSOR,
     CONF_TARIFF_SENSOR,
@@ -59,6 +60,7 @@ from .const import (
     DEFAULT_BATTERY_CAPACITY,
     DEFAULT_CHARGING_LOSS,
     DEFAULT_CHARGING_PROFILE_ID,
+    DEFAULT_COST_TOLERANCE_PCT,
     DEFAULT_FINISH_MODE,
     DEFAULT_HEADROOM,
     DEFAULT_MAX_CURRENT,
@@ -155,6 +157,12 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         self._learned_window_samples: int = 0
         self._unsub_window_timer = None
 
+        # Day vs night electricity price, learned from the optional price
+        # sensor's history. None until learned; gates cost-aware slow charging.
+        self.cost_tolerance_pct: float = DEFAULT_COST_TOLERANCE_PCT
+        self._learned_night_price: float | None = None
+        self._learned_day_price: float | None = None
+
     async def async_config_entry_first_refresh(self) -> None:
         """Subscribe to external sensors and do the first update."""
         await super().async_config_entry_first_refresh()
@@ -172,13 +180,13 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
                 self.hass, watched, self._handle_external_change
             )
 
-        # Learn the real night-tariff window from the sensor's history once at
-        # startup, then refresh daily. Recorder queries are too costly for the
-        # 30-second loop, so they live on their own slow timer.
-        if self._config.get(CONF_TARIFF_SENSOR):
-            self.hass.async_create_task(self._async_learn_night_window())
+        # Learn the real night-tariff window and day/night prices from sensor
+        # history once at startup, then refresh daily. Recorder queries are too
+        # costly for the 30-second loop, so they live on their own slow timer.
+        if self._config.get(CONF_TARIFF_SENSOR) or self._config.get(CONF_PRICE_SENSOR):
+            self.hass.async_create_task(self._async_daily_learn())
             self._unsub_window_timer = async_track_time_interval(
-                self.hass, self._async_learn_night_window, timedelta(hours=24)
+                self.hass, self._async_daily_learn, timedelta(hours=24)
             )
 
     async def async_shutdown(self) -> None:
@@ -193,6 +201,89 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
     def _handle_external_change(self, event) -> None:
         """Recompute immediately when a watched sensor changes."""
         self.hass.async_create_task(self.async_refresh())
+
+    async def _async_daily_learn(self, _now: datetime | None = None) -> None:
+        """Refresh everything learned from recorder history.
+
+        Night window first, then prices — the price classifier uses the
+        freshly-learned window to bucket samples into night vs day.
+        """
+        await self._async_learn_night_window()
+        await self._async_learn_prices()
+
+    async def _async_learn_prices(self, _now: datetime | None = None) -> None:
+        """Learn typical night vs day electricity price from the price sensor.
+
+        Each recorded price sample is bucketed by whether its local time-of-day
+        falls in the (learned or configured) night window; the median of each
+        bucket becomes the learned night/day price. Falls back silently (prices
+        stay None → no cost-aware slow charging) when there's no sensor, no
+        recorder, or one of the buckets is empty.
+        """
+        sensor_id = self._config.get(CONF_PRICE_SENSOR)
+        if not sensor_id:
+            return
+        night_start = self._learned_night_start or _parse_time(
+            self._config.get(CONF_NIGHT_START), DEFAULT_NIGHT_START
+        )
+        night_end = self._learned_night_end or _parse_time(
+            self._config.get(CONF_NIGHT_END), DEFAULT_NIGHT_END
+        )
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.history import (
+                state_changes_during_period,
+            )
+        except ImportError:
+            return
+
+        end = dt_util.utcnow()
+        start = end - timedelta(days=NIGHT_WINDOW_LEARN_DAYS)
+        try:
+            changes = await get_instance(self.hass).async_add_executor_job(
+                state_changes_during_period,
+                self.hass,
+                start,
+                end,
+                sensor_id,
+                True,
+                False,
+                None,
+                True,
+            )
+        except Exception as err:
+            _LOGGER.debug("Price learning skipped (recorder query failed): %s", err)
+            return
+
+        night_prices: list[float] = []
+        day_prices: list[float] = []
+        for st in changes.get(sensor_id, []):
+            price = _safe_float(st.state, default=None)
+            if price is None:
+                continue
+            local = dt_util.as_local(st.last_changed)
+            if self._is_in_night_window(local, night_start, night_end):
+                night_prices.append(price)
+            else:
+                day_prices.append(price)
+
+        if night_prices and day_prices:
+            self._learned_night_price = self._median(night_prices)
+            self._learned_day_price = self._median(day_prices)
+            _LOGGER.debug(
+                "Learned prices: night=%.4f (%d samples) day=%.4f (%d samples)",
+                self._learned_night_price,
+                len(night_prices),
+                self._learned_day_price,
+                len(day_prices),
+            )
+            self.async_update_listeners()
+        else:
+            _LOGGER.debug(
+                "Not enough price samples to learn (%d night, %d day)",
+                len(night_prices),
+                len(day_prices),
+            )
 
     async def _async_learn_night_window(self, _now: datetime | None = None) -> None:
         """Learn the real night-tariff window from the tariff sensor's history.
@@ -288,6 +379,10 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
 
     async def async_set_battery_capacity(self, value: float) -> None:
         self.battery_capacity = float(value)
+        await self.async_refresh()
+
+    async def async_set_cost_tolerance(self, value: float) -> None:
+        self.cost_tolerance_pct = float(value)
         await self.async_refresh()
 
     def register_current_soc_entity(self, entity) -> None:
@@ -585,6 +680,17 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
                 if (self._learned_night_start and self._learned_night_end)
                 else "configured"
             ),
+            "learned_night_price": self._learned_night_price,
+            "learned_day_price": self._learned_day_price,
+            "cost_tolerance_pct": self.cost_tolerance_pct,
+            "price_source": (
+                "learned"
+                if (
+                    self._learned_night_price is not None
+                    and self._learned_day_price is not None
+                )
+                else ("pending" if cfg.get(CONF_PRICE_SENSOR) else "none")
+            ),
         }
 
     # --- Helpers ---
@@ -607,15 +713,46 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
 
         - ``departure``: spread over all the time left to departure (tariff is
           irrelevant in this mode — the user already opted into day charging).
-        - ``end_of_night``: spread over the remaining night-tariff hours only,
-          finishing around night-end.
+        - ``end_of_night`` *with* a learned price + a non-zero cost budget:
+          allowed to spill past night-end toward departure, picking the slowest
+          current whose total cost stays within ``cost_tolerance_pct`` of the
+          cheapest plan (see ``_gentle_current_within_budget``).
+        - ``end_of_night`` *without* prices: spread over the remaining
+          night-tariff hours only, finishing around night-end (the v0.6.0
+          behaviour).
 
         Returns ``(max_a, now)`` for asap or when there's nothing to plan.
         """
         if energy_needed <= 0 or target_finish is None:
             return max_a, now
 
-        # Spread to the mode's deadline.
+        prices_ready = (
+            self._learned_night_price is not None
+            and self._learned_day_price is not None
+        )
+        if (
+            finish_mode == FINISH_MODE_END_OF_NIGHT
+            and prices_ready
+            and self.cost_tolerance_pct > 0
+            and self.departure_time is not None
+        ):
+            return self._gentle_current_within_budget(
+                energy_needed,
+                now,
+                self.departure_time,
+                night_start,
+                night_end,
+                voltage,
+                factor,
+                min_a,
+                max_a,
+                self._learned_night_price,
+                self._learned_day_price,
+                self.cost_tolerance_pct / 100.0,
+                deficit_kwh,
+            )
+
+        # Plain spread to the mode's deadline.
         if finish_mode == FINISH_MODE_END_OF_NIGHT:
             window_hours = self._night_hours_between(
                 now, target_finish, night_start, night_end
@@ -633,6 +770,62 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         power_kw = factor * voltage * gentle_current / 1000.0
         duration = energy_needed / power_kw if power_kw > 0 else 0.0
         return gentle_current, target_finish - timedelta(hours=duration)
+
+    def _gentle_current_within_budget(
+        self,
+        energy_needed: float,
+        now: datetime,
+        departure: datetime,
+        night_start: time,
+        night_end: time,
+        voltage: float,
+        factor: float,
+        min_a: int,
+        max_a: int,
+        night_price: float,
+        day_price: float,
+        tol_frac: float,
+        deficit_kwh: float,
+    ) -> tuple[int, datetime]:
+        """Slowest current finishing by departure whose cost stays in budget.
+
+        Baseline (cheapest) cost charges the unavoidable ``deficit_kwh`` in day
+        tariff and the rest at night. The budget is ``baseline * (1 + tol)``.
+        Charging starts now (night-open) and a slower current pushes the finish
+        later — past night-end into day tariff — so cost rises as the current
+        drops. Scanning from min_a up, the first current that finishes by
+        departure *and* stays within budget is the slowest acceptable one.
+        """
+        total_window_h = (departure - now).total_seconds() / 3600.0
+        if total_window_h <= 0:
+            return max_a, now
+
+        baseline_cost = (
+            max(0.0, energy_needed - deficit_kwh) * night_price
+            + deficit_kwh * day_price
+        )
+        budget = baseline_cost * (1.0 + tol_frac)
+
+        for amps in range(min_a, max_a + 1):
+            power_kw = factor * voltage * amps / 1000.0
+            if power_kw <= 0:
+                continue
+            duration = energy_needed / power_kw
+            if duration > total_window_h + 1e-6:
+                continue  # too slow to finish by departure
+            finish = now + timedelta(hours=duration)
+            night_h = self._night_hours_between(
+                now, finish, night_start, night_end
+            )
+            night_energy = min(energy_needed, night_h * power_kw)
+            day_energy = energy_needed - night_energy
+            cost = night_energy * night_price + day_energy * day_price
+            if cost <= budget * (1.0 + 1e-9):
+                return amps, now
+
+        # Nothing fit the budget and the deadline — charge at max and let the
+        # deficit / safety overrides handle it.
+        return max_a, now
 
     @staticmethod
     def _kw_to_current(
@@ -672,6 +865,12 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         )
         med = int(round(med)) % 1440
         return time(hour=med // 60, minute=med % 60)
+
+    @staticmethod
+    def _median(values: list[float]) -> float:
+        s = sorted(values)
+        n = len(s)
+        return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
 
     @staticmethod
     def _is_in_night_window(at: datetime, night_start: time, night_end: time) -> bool:

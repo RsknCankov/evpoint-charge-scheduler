@@ -161,6 +161,24 @@ SENSORS: tuple[EVSensorDescription, ...] = (
         icon="mdi:swap-horizontal",
         value_fn=lambda d: d.get("night_window_source"),
     ),
+    EVSensorDescription(
+        key="learned_night_price",
+        name="Learned night price",
+        icon="mdi:cash",
+        value_fn=lambda d: d.get("learned_night_price"),
+    ),
+    EVSensorDescription(
+        key="learned_day_price",
+        name="Learned day price",
+        icon="mdi:cash",
+        value_fn=lambda d: d.get("learned_day_price"),
+    ),
+    EVSensorDescription(
+        key="price_source",
+        name="Price source",
+        icon="mdi:tag-text-outline",
+        value_fn=lambda d: d.get("price_source"),
+    ),
 )
 
 

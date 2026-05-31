@@ -22,6 +22,7 @@ CONF_OCPP_SET_RATE_SERVICE = "ocpp_set_rate_service"
 CONF_OCPP_DEVID = "ocpp_devid"
 CONF_CHARGING_PROFILE_ID = "charging_profile_id"
 CONF_CHARGER_SWITCH = "charger_switch"
+CONF_PRICE_SENSOR = "price_sensor"  # optional electricity price sensor
 
 CONF_BATTERY_CAPACITY = "battery_capacity"
 CONF_VOLTAGE = "voltage"
@@ -46,6 +47,9 @@ DEFAULT_TOTAL_LIMIT = 60
 DEFAULT_HEADROOM = 4
 DEFAULT_CHARGING_LOSS = 1.10
 DEFAULT_TARGET_SOC = 80
+# How much more than the cheapest plan the user will pay for gentler (slower)
+# charging that spills past night-tariff end into day tariff. Percent.
+DEFAULT_COST_TOLERANCE_PCT = 15
 DEFAULT_NIGHT_START = "22:00"
 DEFAULT_NIGHT_END = "06:00"
 DEFAULT_SAFETY_MARGIN_HOURS = 0.5
@@ -70,6 +74,7 @@ KEY_TARGET_SOC = "target_soc"
 KEY_CURRENT_SOC = "current_soc"
 KEY_DEPARTURE = "departure_time"
 KEY_BATTERY_CAPACITY = "battery_capacity"
+KEY_COST_TOLERANCE = "cost_tolerance"
 KEY_FINISH_MODE = "finish_mode"
 KEY_SESSION_ACTIVE = "session_active"
 KEY_START_SESSION = "start_session"

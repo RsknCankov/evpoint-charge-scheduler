@@ -7,6 +7,7 @@
         "data": {
           "tariff_sensor": "Electricity tariff sensor",
           "night_tariff_value": "Sensor value that means 'night tariff' (e.g. night, off_peak)",
+          "price_sensor": "Electricity price sensor (optional, enables cost-aware slow charging)",
           "apartment_current_sensor": "Apartment current sensor (Amps, excluding EV)",
           "soc_sensor": "Car State of Charge sensor (optional)",
           "charger_switch": "Charger start/stop switch entity",
@@ -39,6 +40,7 @@
         "data": {
           "tariff_sensor": "Electricity tariff sensor",
           "night_tariff_value": "Sensor value that means 'night tariff'",
+          "price_sensor": "Electricity price sensor (optional, enables cost-aware slow charging)",
           "apartment_current_sensor": "Apartment current sensor",
           "soc_sensor": "Car State of Charge sensor (optional)",
           "charger_switch": "Charger start/stop switch entity",
