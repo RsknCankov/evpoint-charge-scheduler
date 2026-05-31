@@ -8,6 +8,11 @@ DEFAULT_NAME = "EVPoint Charge Scheduler"
 
 UPDATE_INTERVAL = timedelta(seconds=30)
 
+# How many days of tariff-sensor history to inspect when learning the actual
+# night-tariff window. Utility windows are fixed, so a couple of weeks gives a
+# tight, outlier-resistant cluster.
+NIGHT_WINDOW_LEARN_DAYS = 14
+
 # --- Configuration keys (set in config flow) ---
 CONF_TARIFF_SENSOR = "tariff_sensor"
 CONF_NIGHT_TARIFF_VALUE = "night_tariff_value"
@@ -75,6 +80,7 @@ ACTION_IDLE = "idle"
 ACTION_DONE = "done"
 ACTION_TOO_LATE = "too_late"
 ACTION_CHARGE_MAX = "charge_max_now"
+ACTION_CHARGE_GENTLE = "charge_gentle"
 ACTION_CHARGE_DAY_SUPPLEMENT = "charge_day_supplement"
 ACTION_WAIT_FOR_NIGHT = "wait_for_night"
 ACTION_WAIT_FOR_START_TIME = "wait_for_start_time"

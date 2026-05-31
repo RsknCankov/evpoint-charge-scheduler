@@ -136,6 +136,31 @@ SENSORS: tuple[EVSensorDescription, ...] = (
         icon="mdi:timer-play-outline",
         value_fn=lambda d: d.get("latest_start_time"),
     ),
+    EVSensorDescription(
+        key="gentle_target_current",
+        name="Gentle target current",
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        icon="mdi:current-ac",
+        value_fn=lambda d: d.get("gentle_target_current"),
+    ),
+    EVSensorDescription(
+        key="learned_night_start",
+        name="Learned night start",
+        icon="mdi:weather-night",
+        value_fn=lambda d: d.get("learned_night_start"),
+    ),
+    EVSensorDescription(
+        key="learned_night_end",
+        name="Learned night end",
+        icon="mdi:weather-sunset-up",
+        value_fn=lambda d: d.get("learned_night_end"),
+    ),
+    EVSensorDescription(
+        key="night_window_source",
+        name="Night window source",
+        icon="mdi:swap-horizontal",
+        value_fn=lambda d: d.get("night_window_source"),
+    ),
 )
 
 

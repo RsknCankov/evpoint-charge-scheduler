@@ -20,12 +20,16 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_interval,
+)
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from .const import (
     ACTION_CHARGE_DAY_SUPPLEMENT,
+    ACTION_CHARGE_GENTLE,
     ACTION_CHARGE_MAX,
     ACTION_DONE,
     ACTION_IDLE,
@@ -71,6 +75,7 @@ from .const import (
     FINISH_MODE_ASAP,
     FINISH_MODE_DEPARTURE,
     FINISH_MODE_END_OF_NIGHT,
+    NIGHT_WINDOW_LEARN_DAYS,
     PLAN_ALREADY_AT_TARGET,
     PLAN_INSUFFICIENT_TIME,
     PLAN_OK,
@@ -142,6 +147,14 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         self._last_applied_running: bool | None = None
         self._unsub_state_listener = None
 
+        # Night-tariff window learned from the tariff sensor's recorder history.
+        # None until enough history is available; the configured clock values
+        # are used as the fallback in the meantime.
+        self._learned_night_start: time | None = None
+        self._learned_night_end: time | None = None
+        self._learned_window_samples: int = 0
+        self._unsub_window_timer = None
+
     async def async_config_entry_first_refresh(self) -> None:
         """Subscribe to external sensors and do the first update."""
         await super().async_config_entry_first_refresh()
@@ -159,15 +172,101 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
                 self.hass, watched, self._handle_external_change
             )
 
+        # Learn the real night-tariff window from the sensor's history once at
+        # startup, then refresh daily. Recorder queries are too costly for the
+        # 30-second loop, so they live on their own slow timer.
+        if self._config.get(CONF_TARIFF_SENSOR):
+            self.hass.async_create_task(self._async_learn_night_window())
+            self._unsub_window_timer = async_track_time_interval(
+                self.hass, self._async_learn_night_window, timedelta(hours=24)
+            )
+
     async def async_shutdown(self) -> None:
         if self._unsub_state_listener is not None:
             self._unsub_state_listener()
             self._unsub_state_listener = None
+        if self._unsub_window_timer is not None:
+            self._unsub_window_timer()
+            self._unsub_window_timer = None
 
     @callback
     def _handle_external_change(self, event) -> None:
         """Recompute immediately when a watched sensor changes."""
         self.hass.async_create_task(self.async_refresh())
+
+    async def _async_learn_night_window(self, _now: datetime | None = None) -> None:
+        """Learn the real night-tariff window from the tariff sensor's history.
+
+        Walks the sensor's recorded state changes, collects the time-of-day of
+        every day→night transition (night_start) and night→day transition
+        (night_end), and stores the circular median of each. Falls back
+        silently (leaves the learned values as None → configured clock is used)
+        when there's no sensor, no recorder, or too little history.
+        """
+        sensor_id = self._config.get(CONF_TARIFF_SENSOR)
+        if not sensor_id:
+            return
+        night_value = self._config.get(
+            CONF_NIGHT_TARIFF_VALUE, DEFAULT_NIGHT_TARIFF_VALUE
+        )
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.history import (
+                state_changes_during_period,
+            )
+        except ImportError:
+            return
+
+        end = dt_util.utcnow()
+        start = end - timedelta(days=NIGHT_WINDOW_LEARN_DAYS)
+        try:
+            changes = await get_instance(self.hass).async_add_executor_job(
+                state_changes_during_period,
+                self.hass,
+                start,
+                end,
+                sensor_id,
+                True,   # no_attributes — we only need state + last_changed
+                False,  # descending
+                None,   # limit
+                True,   # include_start_time_state
+            )
+        except Exception as err:  # recorder disabled / not ready / sensor unrecorded
+            _LOGGER.debug("Night-window learning skipped (recorder query failed): %s", err)
+            return
+
+        start_samples: list[int] = []
+        end_samples: list[int] = []
+        prev_is_night: bool | None = None
+        for st in changes.get(sensor_id, []):
+            if st.state in (None, STATE_UNAVAILABLE, STATE_UNKNOWN, ""):
+                continue
+            is_night = st.state == night_value
+            if prev_is_night is not None and is_night != prev_is_night:
+                local = dt_util.as_local(st.last_changed)
+                minute = local.hour * 60 + local.minute
+                (start_samples if is_night else end_samples).append(minute)
+            prev_is_night = is_night
+
+        if len(start_samples) >= 2 and len(end_samples) >= 2:
+            self._learned_night_start = self._circular_median_time(start_samples)
+            self._learned_night_end = self._circular_median_time(end_samples)
+            self._learned_window_samples = min(len(start_samples), len(end_samples))
+            _LOGGER.debug(
+                "Learned night window %s–%s from %d start / %d end transitions",
+                self._learned_night_start,
+                self._learned_night_end,
+                len(start_samples),
+                len(end_samples),
+            )
+            self.async_update_listeners()
+        else:
+            _LOGGER.debug(
+                "Not enough tariff transitions to learn night window "
+                "(%d start, %d end); using configured clock",
+                len(start_samples),
+                len(end_samples),
+            )
 
     # --- Public setters used by writable entity classes ---
 
@@ -234,8 +333,14 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         total_limit = int(cfg.get(CONF_TOTAL_LIMIT, DEFAULT_TOTAL_LIMIT))
         headroom = int(cfg.get(CONF_HEADROOM, DEFAULT_HEADROOM))
         safety_margin = float(cfg.get(CONF_SAFETY_MARGIN_HOURS, DEFAULT_SAFETY_MARGIN_HOURS))
-        night_start = _parse_time(cfg.get(CONF_NIGHT_START), DEFAULT_NIGHT_START)
-        night_end = _parse_time(cfg.get(CONF_NIGHT_END), DEFAULT_NIGHT_END)
+        # Prefer the window learned from the tariff sensor's history; fall back
+        # to the configured clock values until enough history is available.
+        night_start = self._learned_night_start or _parse_time(
+            cfg.get(CONF_NIGHT_START), DEFAULT_NIGHT_START
+        )
+        night_end = self._learned_night_end or _parse_time(
+            cfg.get(CONF_NIGHT_END), DEFAULT_NIGHT_END
+        )
         night_value = cfg.get(CONF_NIGHT_TARIFF_VALUE, DEFAULT_NIGHT_TARIFF_VALUE)
 
         factor = math.sqrt(3) if phases >= 3 else 1.0
@@ -322,13 +427,22 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         else:
             target_finish = None  # asap, or no departure set yet
 
-        if target_finish is not None and charge_duration_hours > 0:
-            latest_start = target_finish - timedelta(
-                hours=charge_duration_hours + safety_margin
-            )
-        else:
-            latest_start = now  # charge immediately under asap (or fallback)
-        should_have_started = now >= latest_start
+        # Gentle plan for the non-asap finish modes: charge at the *slowest*
+        # current that still finishes by the deadline. See _compute_gentle_plan.
+        gentle_current, gentle_start = self._compute_gentle_plan(
+            finish_mode,
+            energy_needed,
+            now,
+            target_finish,
+            night_start,
+            night_end,
+            voltage,
+            factor,
+            min_a,
+            max_a,
+            deficit_kwh,
+        )
+        gentle_should_start = now >= gentle_start
 
         # Decide recommended action. No session = idle: we still compute the
         # plan for the dashboard, but never push to the charger.
@@ -345,20 +459,21 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             # Safety: too tight to wait around
             action = ACTION_CHARGE_MAX
         elif finish_mode == FINISH_MODE_DEPARTURE:
-            # Tariff irrelevant; just gate on time
-            if should_have_started:
-                action = ACTION_CHARGE_MAX
+            # Tariff irrelevant; spread gently up to the departure deadline.
+            if gentle_should_start:
+                action = ACTION_CHARGE_GENTLE
             else:
                 action = ACTION_WAIT_FOR_START_TIME
         elif finish_mode == FINISH_MODE_END_OF_NIGHT:
-            # Must wait for night, then hold until latest_start within night
+            # Wait for night, then charge gently across the rest of the night
+            # window so it finishes around night-end instead of bursting at max.
             if not is_night_now:
                 action = ACTION_WAIT_FOR_NIGHT
-            elif should_have_started:
-                action = ACTION_CHARGE_MAX
+            elif gentle_should_start:
+                action = ACTION_CHARGE_GENTLE
             else:
                 action = ACTION_WAIT_FOR_START_TIME
-        else:  # FINISH_MODE_ASAP — original behaviour
+        else:  # FINISH_MODE_ASAP — burst at max as soon as tariff allows
             if is_night_now:
                 action = ACTION_CHARGE_MAX
             else:
@@ -367,6 +482,8 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         # Plan-level target current (before load balancing)
         if action == ACTION_CHARGE_MAX:
             planned_current = max_a
+        elif action == ACTION_CHARGE_GENTLE:
+            planned_current = gentle_current
         elif action == ACTION_CHARGE_DAY_SUPPLEMENT:
             planned_current = day_current
         else:
@@ -447,10 +564,75 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             "battery_capacity": round(battery, 2),
             "session_active": self.session_active,
             "charge_duration_hours": round(charge_duration_hours, 3),
-            "latest_start_time": latest_start if target_finish is not None else None,
+            "latest_start_time": gentle_start if target_finish is not None else None,
+            "gentle_target_current": (
+                gentle_current
+                if finish_mode in (FINISH_MODE_END_OF_NIGHT, FINISH_MODE_DEPARTURE)
+                else None
+            ),
+            "learned_night_start": (
+                self._learned_night_start.strftime("%H:%M")
+                if self._learned_night_start
+                else None
+            ),
+            "learned_night_end": (
+                self._learned_night_end.strftime("%H:%M")
+                if self._learned_night_end
+                else None
+            ),
+            "night_window_source": (
+                "learned"
+                if (self._learned_night_start and self._learned_night_end)
+                else "configured"
+            ),
         }
 
     # --- Helpers ---
+
+    def _compute_gentle_plan(
+        self,
+        finish_mode: str,
+        energy_needed: float,
+        now: datetime,
+        target_finish: datetime | None,
+        night_start: time,
+        night_end: time,
+        voltage: float,
+        factor: float,
+        min_a: int,
+        max_a: int,
+        deficit_kwh: float,
+    ) -> tuple[int, datetime]:
+        """Slowest current that finishes by the deadline, and when to start.
+
+        - ``departure``: spread over all the time left to departure (tariff is
+          irrelevant in this mode — the user already opted into day charging).
+        - ``end_of_night``: spread over the remaining night-tariff hours only,
+          finishing around night-end.
+
+        Returns ``(max_a, now)`` for asap or when there's nothing to plan.
+        """
+        if energy_needed <= 0 or target_finish is None:
+            return max_a, now
+
+        # Spread to the mode's deadline.
+        if finish_mode == FINISH_MODE_END_OF_NIGHT:
+            window_hours = self._night_hours_between(
+                now, target_finish, night_start, night_end
+            )
+        elif finish_mode == FINISH_MODE_DEPARTURE:
+            window_hours = max(0.0, (target_finish - now).total_seconds() / 3600.0)
+        else:  # asap — no gentle plan
+            return max_a, now
+
+        if window_hours <= 0:
+            return max_a, now
+        gentle_current = self._kw_to_current(
+            energy_needed / window_hours, voltage, factor, min_a, max_a
+        )
+        power_kw = factor * voltage * gentle_current / 1000.0
+        duration = energy_needed / power_kw if power_kw > 0 else 0.0
+        return gentle_current, target_finish - timedelta(hours=duration)
 
     @staticmethod
     def _kw_to_current(
@@ -461,6 +643,35 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         raw = (kw * 1000.0) / (factor * voltage)
         rounded = math.ceil(raw)
         return max(min_a, min(rounded, max_a))
+
+    @staticmethod
+    def _circular_median_time(minutes: list[int]) -> time | None:
+        """Circular median of a list of minutes-of-day, as a `time`.
+
+        Times-of-day are circular (23:58 and 00:02 are 4 minutes apart, not
+        ~24h), so we anchor on the circular mean, unwrap each sample to within
+        ±12h of that anchor, take the ordinary median, and wrap back. Robust to
+        the occasional stray transition without being thrown off by midnight.
+        """
+        if not minutes:
+            return None
+        angles = [m / 1440.0 * 2 * math.pi for m in minutes]
+        mean_angle = math.atan2(
+            sum(math.sin(a) for a in angles) / len(angles),
+            sum(math.cos(a) for a in angles) / len(angles),
+        )
+        anchor = (mean_angle / (2 * math.pi) * 1440.0) % 1440.0
+        unwrapped = sorted(
+            anchor + ((m - anchor + 720) % 1440 - 720) for m in minutes
+        )
+        n = len(unwrapped)
+        med = (
+            unwrapped[n // 2]
+            if n % 2
+            else (unwrapped[n // 2 - 1] + unwrapped[n // 2]) / 2
+        )
+        med = int(round(med)) % 1440
+        return time(hour=med // 60, minute=med % 60)
 
     @staticmethod
     def _is_in_night_window(at: datetime, night_start: time, night_end: time) -> bool:

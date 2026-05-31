@@ -41,7 +41,7 @@ evpoint-charge-scheduler/
         ├── const.py                ← all constants, defaults, action states
         ├── coordinator.py          ← the brain — all planner + load balancer math
         ├── config_flow.py          ← config wizard + options flow
-        ├── sensor.py               ← read-only sensors (~16 of them)
+        ├── sensor.py               ← read-only sensors (~20 of them)
         ├── number.py               ← writable battery_capacity, target_soc, current_soc inputs
         ├── datetime.py             ← writable departure_time input
         ├── select.py               ← writable finish_mode dropdown
@@ -62,9 +62,11 @@ Checked top to bottom; first match wins:
 3. `hours_to_departure <= 0` → `too_late`
 4. `deficit_kwh > 0` → `charge_day_supplement` at the minimum rate that, combined with night-at-max, hits target. This **always** overrides finish mode — deficit means night alone won't cover it.
 5. `slack_hours < safety_margin` → `charge_max_now`. Safety override; also bypasses finish mode.
-6. `finish_mode == departure` → `charge_max_now` if `now >= latest_start`, else `wait_for_start_time`.
-7. `finish_mode == end_of_night` → `wait_for_night` if currently day; `charge_max_now` if currently night and `now >= latest_start`; `wait_for_start_time` if currently night but too early.
+6. `finish_mode == departure` → `charge_gentle` if `now >= gentle_start`, else `wait_for_start_time`.
+7. `finish_mode == end_of_night` → `wait_for_night` if currently day; `charge_gentle` if currently night and `now >= gentle_start`; `wait_for_start_time` if currently night but too early.
 8. `finish_mode == asap` (default) → `charge_max_now` if currently night, else `wait_for_night`.
+
+`charge_gentle` (steps 6–7) charges at the slowest current that still finishes by the mode's deadline (`gentle_current`), spreading across the window instead of bursting at max. `asap` is the only mode that still bursts at `max_a`. The deficit (4) and safety (5) overrides still win, so gentle charging only applies when there's genuine slack. `gentle_current`/`gentle_start` are produced by `_compute_gentle_plan`: `departure` spreads over all time to departure; `end_of_night` spreads over the remaining night hours only.
 
 `finish_mode` lives on the coordinator (`self.finish_mode`) and is driven by the writable `select.finish_mode` entity. The config-flow field only seeds the initial value at install time; once the select is set, it overrides on every cycle. `battery_capacity` follows the same pattern via `number.battery_capacity`.
 
@@ -84,8 +86,15 @@ Checked top to bottom; first match wins:
 | `night_hours_available` | Iterates 5-min steps from now → departure, counts minutes in the night window. Wraps midnight correctly. |
 | `deficit_kwh` | `max(0, energy_needed - night_hours_available × max_kw)` |
 | `day_charging_current` | `_kw_to_current(deficit_kwh / day_hours_available, …)`, clamped to `[min_a, max_a]` |
-| `charge_duration_hours` | `energy_needed / max_kw` |
-| `latest_start` | `target_finish - timedelta(hours=charge_duration + safety_margin)`, where `target_finish` depends on finish_mode (see `_latest_night_end_before` for `end_of_night`) |
+| `charge_duration_hours` | `energy_needed / max_kw` (informational only — the dashboard's "at max rate" estimate) |
+| `gentle_current` | `_kw_to_current(energy_needed / gentle_window_hours, …)`, clamped to `[min_a, max_a]`. Window = night hours to `target_finish` for `end_of_night`, all hours to departure for `departure`. |
+| `gentle_start` (→ `latest_start_time`) | `target_finish - timedelta(hours=energy_needed / gentle_power_kw)` — when charging at `gentle_current` must begin to finish by `target_finish`. Equals ~`night_start` in the normal case; slips later only when `gentle_current` floors at `min_a`. `target_finish` depends on finish_mode (see `_latest_night_end_before` for `end_of_night`). |
+
+### Learned night window
+
+When a tariff sensor is configured, `_async_learn_night_window` reads the sensor's recorder history (last `NIGHT_WINDOW_LEARN_DAYS` = 14 days) via `get_instance(hass).async_add_executor_job(state_changes_during_period, …)` — recorder queries are blocking, so they must run in the recorder executor, never inline in `_async_update_data`. It collects the local time-of-day of each day→night transition (`night_start`) and night→day transition (`night_end`), then stores the `_circular_median_time` of each (circular because times-of-day wrap at midnight). Runs once at startup and on a daily `async_track_time_interval`; unsubscribed in `async_shutdown`.
+
+`_async_update_data` prefers `self._learned_night_start`/`_learned_night_end` over the configured clock values for **all** clock-based math (night_hours_available, deficit, gentle window, `_latest_night_end_before`). It does **not** affect `is_night_now` when a sensor is configured — the sensor stays authoritative for the live state; learning only sharpens the look-ahead. Needs ≥2 clean transitions per side or it stays `None` and falls back to config. Surfaced via `sensor.night_window_source` (`learned`/`configured`) and `sensor.learned_night_start`/`_end`.
 
 ### Load balancing
 
@@ -130,7 +139,8 @@ Every external entity in the config flow is `vol.Optional`. The coordinator fall
 
 | Missing | Fallback |
 | --- | --- |
-| Tariff sensor | Derive `is_night_now` from `night_start`/`night_end` clock window. `sensor.tariff_source` reports `schedule` instead of `sensor`. |
+| Tariff sensor | Derive `is_night_now` from `night_start`/`night_end` clock window. `sensor.tariff_source` reports `schedule` instead of `sensor`. No history to learn from, so the configured clock values are used directly. |
+| Recorder / tariff sensor not recorded / <2 days history | The night-window learner (`_async_learn_night_window`) leaves `_learned_night_start`/`_learned_night_end` as `None`; the configured clock values are used. `sensor.night_window_source` reports `configured` instead of `learned`. Logged at `debug`. |
 | Apartment current sensor | Assume 0 A apartment load; load balancing is effectively disabled. `load_balancing_active` reports `False`. |
 | SoC sensor | The `current_soc` number entity is created instead; user updates it manually. |
 | Charger switch | Skip turn_on/turn_off calls. Integration still pushes the OCPP profile. |
@@ -222,7 +232,7 @@ git tag vX.Y.Z && git push --tags
 - **Per-phase vs total amp limits.** The `total_current_limit` config value is assumed per-phase if the user is on 3-phase (most apartment main breakers trip per phase). The math doesn't multiply by phase count.
 - **HACS structure error "Repository structure for main is not compliant"** = `hacs.json` is not at the actual repo root, or there's extra folder nesting. Common when someone commits the entire `evpoint-charge-scheduler/` directory as a subfolder instead of its contents.
 - **Brand icons in `brands/` don't auto-show in HA.** They must be submitted via PR to `home-assistant/brands` under `custom_integrations/evpoint_charge_scheduler/` to appear in the HA UI and HACS listing. Until then, the integration shows a generic placeholder; functionality is unaffected.
-- **`SensorDeviceClass.TIMESTAMP` requires timezone-aware datetimes.** The coordinator uses `dt_util.now()` and preserves tzinfo via `replace()`, so `latest_start_time` is always tz-aware. Don't introduce naïve datetimes.
+- **`SensorDeviceClass.TIMESTAMP` requires timezone-aware datetimes.** The coordinator uses `dt_util.now()` and preserves tzinfo via `replace()`, so `latest_start_time` (now `gentle_start`, derived from `target_finish`) is always tz-aware. Don't introduce naïve datetimes.
 
 ## Quick reference: action states
 
@@ -231,7 +241,8 @@ git tag vX.Y.Z && git push --tags
 | `idle` | No active session — planner advisory only, no commands sent |
 | `done` | Target SoC reached (session auto-ends on the next cycle) |
 | `too_late` | Past departure time |
-| `charge_max_now` | Push max current; happens in night tariff, or under safety override |
+| `charge_max_now` | Push max current; happens in `asap` night tariff, or under deficit/safety override |
+| `charge_gentle` | Charge at `gentle_current` — the slowest rate that finishes by the deadline. `end_of_night` / `departure` only |
 | `charge_day_supplement` | Charge at calculated minimum day rate because night-alone can't cover |
 | `wait_for_night` | Day tariff, no urgency yet — sit idle |
 | `wait_for_start_time` | Intentionally holding off under `end_of_night` or `departure` finish mode |

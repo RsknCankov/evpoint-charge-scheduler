@@ -49,10 +49,15 @@ While a session is active, every 30 seconds (and on relevant state changes) it:
 2. Computes how many hours of night tariff exist between now and departure.
 3. Computes the deficit: `max(0, energy_needed - night_hours * max_power)`.
 4. Picks an action:
-   - Currently night tariff → `charge_max_now` at max current.
-   - Currently day tariff with `deficit > 0` → `charge_day_supplement` at the
+   - `asap` + night tariff → `charge_max_now` at max current.
+   - `end_of_night` / `departure` → `charge_gentle`: the *slowest* current that
+     still finishes by the deadline, spreading the charge across the window
+     instead of bursting at max (gentler on the battery and the supply cable).
+   - Day tariff with `deficit > 0` → `charge_day_supplement` at the
      minimum rate that, combined with night-at-max, will hit the target.
-   - Currently day tariff with no deficit → `wait_for_night`, charger off.
+   - Day tariff with no deficit → `wait_for_night`, charger off.
+   - A `deficit` or slack below the safety margin overrides everything back to
+     `charge_max_now`.
 5. Caps that target by `(total_limit - headroom - apartment_current)` so the
    apartment always wins. If the apartment leaves less than the charger's
    minimum current, charging pauses entirely.
@@ -73,7 +78,7 @@ as you have wired up and the integration degrades gracefully:
 
 | Field | If omitted |
 | --- | --- |
-| **Tariff sensor** | Night vs day is derived from the configured night-start / night-end clock window. |
+| **Tariff sensor** | Night vs day is derived from the configured night-start / night-end clock window. When a tariff sensor **is** configured, the integration also learns the real night window from its recorder history (refreshed daily) and uses that for all planning math — see "Learned night window" below. |
 | **Apartment current sensor** | Load balancing is disabled — the charger uses the full configured limit. |
 | **Car SoC sensor** | A manual `Current SoC` number entity is created for you to keep up to date. |
 | **Charger switch entity** | The integration sets the current limit but doesn't start/stop the transaction. When a switch **is** configured, charging is stopped by switching it off, and the integration skips the redundant 0-amp OCPP push. When it's omitted, the session is stopped by pushing a `limit_amps: 0` OCPP profile instead. |
@@ -92,20 +97,42 @@ behaviour).
 
 | Mode | When charging finishes | Best for |
 | --- | --- | --- |
-| `asap` (default) | Whenever it naturally finishes, usually shortly after night tariff begins. Car may sit at high SoC for hours. | Maximum cost saving, maximum robustness to delays. |
-| `end_of_night` | Just before night tariff ends. Car sits at high SoC only briefly. | Same cost saving as ASAP, plus gentler on the battery (less calendar aging at high SoC). |
-| `departure` | Exactly at departure time. May cross into day tariff. | A warm battery at departure (useful in winter), at the cost of paying day rates for some energy. |
+| `asap` (default) | Whenever it naturally finishes, at **max current**, usually shortly after night tariff begins. Car may sit at high SoC for hours. | Maximum cost saving, maximum robustness to delays. |
+| `end_of_night` | Around night-tariff end, charging **gently across the whole night window** at the slowest current that still finishes in time. | Same cost saving as ASAP, but the slowest practical current — gentler on the battery and the supply cable, and finishes near night-end so it sits at high SoC only briefly. |
+| `departure` | Around departure time, charging **gently across all the time available**. May cross into day tariff. | A warm battery at departure (useful in winter); gentlest current, at the cost of paying day rates for some energy. |
 
-Internally, modes other than `asap` compute a `latest_start_time` and hold the
-charger off until that moment arrives. `sensor.latest_start_time` exposes this
-so you can see when the integration plans to start. If anything triggers a
-deficit or pushes slack below the safety margin, all modes fall back to
-"charge now" — finish-mode is the polite default, not a hard schedule.
+Internally, `end_of_night` and `departure` charge at a *gentle* current —
+`energy_needed ÷ available window` — instead of max. As the window shrinks the
+rate is recomputed each cycle, so it self-corrects if charging falls behind. If
+the need is tiny it floors at the charger's minimum current and starts later so
+it still finishes near the deadline. `sensor.gentle_target_current` shows the
+planned slow rate, and `sensor.latest_start_time` shows when it plans to start.
+If a deficit or slack below the safety margin appears, all modes fall back to
+charging at max — gentle charging is the polite default, not a hard schedule.
 
 The mode is also exposed as a writable `select.<name>_finish_mode` dropdown, so
 you can flip it per-trip from the dashboard or an automation without re-opening
 the integration's options flow. The select takes precedence over the config
 value once it has been set; the config-flow field acts as the initial seed.
+
+## Learned night window
+
+When a **tariff sensor** is configured, the integration doesn't just trust the
+night-start / night-end times you typed into the config flow — it learns the
+*real* window from the sensor's recorder history. Once a day (and at startup) it
+scans the last 14 days of the sensor's state changes, takes the typical
+time-of-day of each day→night and night→day transition, and uses those for all
+the planning math (`night_hours_available`, the deficit, and the gentle-charging
+window). This keeps the schedule accurate even if your configured clock values
+are stale, and means you don't have to keep them in sync by hand.
+
+It degrades gracefully: with no tariff sensor, no `recorder`, a sensor excluded
+from recording, or fewer than a couple of days of history, it silently falls
+back to the configured clock values. `sensor.<name>_night_window_source` tells
+you which is currently in use, and `sensor.<name>_learned_night_start` /
+`_learned_night_end` show what was detected. The live night/day state always
+comes straight from the sensor; the learned window only improves the planner's
+look-ahead.
 
 ## OCPP service payload
 
@@ -162,8 +189,10 @@ with theirs.
 - `sensor.<name>_available_current` (A) — apartment headroom for the EV
 - `sensor.<name>_dynamic_target_current` (A) — actual current pushed to the charger
 - `sensor.<name>_recommended_action` — one of: `idle` (no active session),
-  `done`, `too_late`, `charge_max_now`, `charge_day_supplement`,
-  `wait_for_night`, `wait_for_start_time`
+  `done`, `too_late`, `charge_max_now`, `charge_gentle`,
+  `charge_day_supplement`, `wait_for_night`, `wait_for_start_time`
+- `sensor.<name>_gentle_target_current` (A) — the planned slow charging rate
+  under `end_of_night` / `departure`; `unavailable` in `asap` mode
 - `sensor.<name>_throttle_reason` — `unrestricted`, `smart_charging_pause`,
   `apartment_load_too_high`, `throttled_by_apartment`
 - `sensor.<name>_plan_status` — `ok`, `already_at_target`, `too_late`,
@@ -173,6 +202,11 @@ with theirs.
   only computes, your own automations act)
 - `sensor.<name>_tariff_source` — `sensor` if a tariff entity is configured,
   `schedule` if night/day is being derived from the configured clock window
+- `sensor.<name>_learned_night_start` / `sensor.<name>_learned_night_end` —
+  the night window learned from the tariff sensor's history (`HH:MM`), or
+  `unavailable` until enough history exists
+- `sensor.<name>_night_window_source` — `learned` when the planner is using the
+  history-derived window, `configured` when falling back to the clock values
 - `sensor.<name>_finish_mode` — the currently active finish mode (`asap`,
   `end_of_night`, or `departure`)
 - `sensor.<name>_latest_start_time` — when charging is planned to begin under
