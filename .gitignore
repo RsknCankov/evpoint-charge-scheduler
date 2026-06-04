@@ -2,3 +2,8 @@
 
 # GSD planning docs (local-only)
 .planning/
+__pycache__/
+*.pyc
+*.pyo
+.venv-test/
+.venv/
