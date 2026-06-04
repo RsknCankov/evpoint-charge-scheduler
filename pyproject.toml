@@ -1,0 +1,10 @@
+# pyproject.toml — repo root. First pyproject.toml in the repo; it carries the
+# pytest configuration only and does NOT collide with the integration package's
+# manifest.json / hacs.json.
+[tool.pytest.ini_options]
+# MANDATORY (D-11): pytest-asyncio 1.x silently SKIPS async tests without this.
+# The coordinator and its _async_update_data are async, so every `async def
+# test_*` must run automatically without per-test @pytest.mark.asyncio.
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# No addopts/--cov in Phase 1 — coverage gates are deferred to Phase 4 (D-10).
