@@ -1,1 +1,4 @@
 .DS_Store
+
+# GSD planning docs (local-only)
+.planning/
