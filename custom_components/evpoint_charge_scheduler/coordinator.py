@@ -88,6 +88,9 @@ from .const import (
     THROTTLE_UNRESTRICTED,
     UPDATE_INTERVAL,
 )
+from .load_balancer import balance
+from .models import LoadInputs, PlanInputs
+from .planner import plan
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -539,50 +542,28 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         )
         gentle_should_start = now >= gentle_start
 
-        # Decide recommended action. No session = idle: we still compute the
-        # plan for the dashboard, but never push to the charger.
-        if not self.session_active:
-            action = ACTION_IDLE
-        elif energy_needed <= 0:
-            action = ACTION_DONE
-        elif hours_to_dep <= 0:
-            action = ACTION_TOO_LATE
-        elif deficit_kwh > 0:
-            # Always honour the deficit — applies in every finish mode
-            action = ACTION_CHARGE_DAY_SUPPLEMENT
-        elif slack < safety_margin:
-            # Safety: too tight to wait around
-            action = ACTION_CHARGE_MAX
-        elif finish_mode == FINISH_MODE_DEPARTURE:
-            # Tariff irrelevant; spread gently up to the departure deadline.
-            if gentle_should_start:
-                action = ACTION_CHARGE_GENTLE
-            else:
-                action = ACTION_WAIT_FOR_START_TIME
-        elif finish_mode == FINISH_MODE_END_OF_NIGHT:
-            # Wait for night, then charge gently across the rest of the night
-            # window so it finishes around night-end instead of bursting at max.
-            if not is_night_now:
-                action = ACTION_WAIT_FOR_NIGHT
-            elif gentle_should_start:
-                action = ACTION_CHARGE_GENTLE
-            else:
-                action = ACTION_WAIT_FOR_START_TIME
-        else:  # FINISH_MODE_ASAP — burst at max as soon as tariff allows
-            if is_night_now:
-                action = ACTION_CHARGE_MAX
-            else:
-                action = ACTION_WAIT_FOR_NIGHT
-
-        # Plan-level target current (before load balancing)
-        if action == ACTION_CHARGE_MAX:
-            planned_current = max_a
-        elif action == ACTION_CHARGE_GENTLE:
-            planned_current = gentle_current
-        elif action == ACTION_CHARGE_DAY_SUPPLEMENT:
-            planned_current = day_current
-        else:
-            planned_current = 0
+        # Decide recommended action + plan-level target current via the pure
+        # planner seam. No session = idle: we still compute the plan for the
+        # dashboard, but never push to the charger. The decision tree and
+        # planned-current selection live in planner.plan() over PlanInputs;
+        # the precedence (session > done > too_late > deficit > safety > mode,
+        # with ASAP as the bare else) is preserved there verbatim.
+        decision = plan(PlanInputs(
+            session_active=self.session_active,
+            energy_needed=energy_needed,
+            hours_to_dep=hours_to_dep,
+            deficit_kwh=deficit_kwh,
+            slack=slack,
+            safety_margin=safety_margin,
+            finish_mode=finish_mode,
+            is_night_now=is_night_now,
+            gentle_should_start=gentle_should_start,
+            gentle_current=gentle_current,
+            day_current=day_current,
+            max_a=max_a,
+        ))
+        action = decision.action
+        planned_current = decision.planned_current
 
         # Load balancing against apartment consumption. Without a sensor,
         # we assume the apartment isn't drawing anything and let the charger
@@ -595,20 +576,20 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         else:
             apartment_current = 0.0
             load_balancing_active = False
-        available_current = max(0, total_limit - headroom - int(apartment_current))
-
-        if planned_current <= 0:
-            dynamic_current = 0
-            throttle_reason = THROTTLE_SMART_PAUSE
-        elif available_current < min_a:
-            dynamic_current = 0
-            throttle_reason = THROTTLE_APARTMENT_HIGH
-        elif available_current < planned_current:
-            dynamic_current = available_current
-            throttle_reason = THROTTLE_BY_APARTMENT
-        else:
-            dynamic_current = planned_current
-            throttle_reason = THROTTLE_UNRESTRICTED
+        # Apartment-priority throttle via the pure load-balancer seam. The
+        # available_current math (max(0, total_limit - headroom -
+        # int(apartment_current))) and the throttle ladder live in
+        # load_balancer.balance() over LoadInputs, verbatim.
+        output = balance(LoadInputs(
+            planned_current=planned_current,
+            total_limit=total_limit,
+            headroom=headroom,
+            apartment_current=apartment_current,
+            min_a=min_a,
+        ))
+        available_current = output.available_current
+        dynamic_current = output.dynamic_current
+        throttle_reason = output.throttle_reason
 
         # Determine the integration's effective control mode based on what's
         # actually wired up. Surfaces as a sensor so the user can see whether
