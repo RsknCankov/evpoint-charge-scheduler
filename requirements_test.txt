@@ -11,4 +11,7 @@
 # stable HA APIs, so HA 2025.12 vs 2026.6 makes no behavioural difference to
 # the suite. Restore 0.13.336 + Python 3.14 once 3.14 is available.
 pytest-homeassistant-custom-component==0.13.300
-freezegun==1.5.5
+# PHACC 0.13.300 transitively pins freezegun==1.5.2, so an exact ==1.5.5 pin
+# (which targets the 0.13.336 line) is a resolver conflict here. Use a range
+# and let PHACC's transitive pin resolve it.
+freezegun>=1.5,<2
