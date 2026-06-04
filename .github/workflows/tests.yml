@@ -1,0 +1,43 @@
+# .github/workflows/tests.yml
+# Single-job CI: runs the pytest suite against PHACC's in-memory Home Assistant
+# (no live HA, no Docker, no services) plus the CLAUDE.md validation gate.
+name: tests
+
+on: [push, pull_request]
+
+# SECURITY (T-01-PRIV / T-01-FORK): least privilege. This is a test-only
+# workflow — it needs no write scopes, no packages, no id-token. Default-deny
+# everything by granting only read access to repo contents. The trigger is
+# plain `pull_request` (read-only token for forks) and deliberately NOT the
+# fork-token-exposing variant, and no step references secrets, so a fork PR
+# cannot exfiltrate credentials.
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # FALLBACK PIN: PHACC 0.13.336 / HA 2026.6.0 requires Python 3.14,
+          # which is unavailable in the current environment, so we use the
+          # documented fallback — PHACC 0.13.300 (HA 2025.12.2) on Python 3.13
+          # (kept in lockstep with requirements_test.txt). Restore "3.14" +
+          # PHACC 0.13.336 once a 3.14 runner is available.
+          python-version: "3.13"
+      - run: pip install -r requirements_test.txt
+      - run: python -m pytest
+      # CLAUDE.md "Validate before commit" gate (D-10): py_compile + JSON
+      # validity + strings/translations byte-identical mirror.
+      - run: python -m py_compile custom_components/evpoint_charge_scheduler/*.py
+      - run: |
+          python -c "import json,sys; [json.load(open(f)) for f in sys.argv[1:]]" \
+            custom_components/evpoint_charge_scheduler/manifest.json \
+            custom_components/evpoint_charge_scheduler/strings.json \
+            custom_components/evpoint_charge_scheduler/translations/en.json \
+            hacs.json
+      - run: |
+          diff custom_components/evpoint_charge_scheduler/strings.json \
+               custom_components/evpoint_charge_scheduler/translations/en.json
