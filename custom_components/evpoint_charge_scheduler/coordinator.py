@@ -38,6 +38,7 @@ from .const import (
     ACTION_WAIT_FOR_START_TIME,
     CONF_APARTMENT_CURRENT_SENSOR,
     CONF_BATTERY_CAPACITY,
+    CONF_CHARGER_POWER_SENSOR,
     CONF_CHARGER_SWITCH,
     CONF_CHARGING_LOSS,
     CONF_FINISH_MODE,
@@ -142,6 +143,17 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         # while a session is active; idle otherwise. The binary_sensor restores
         # session state across HA restarts.
         self.session_active: bool = False
+
+        # Delivered-energy accumulator (SOC-01 / D-02). Each cycle integrates
+        # the configured charger power sensor over the elapsed wall-clock
+        # interval (Riemann sum) into delivered_energy_kwh, in kWh. Reset on
+        # session start; restored across an HA restart by a RestoreEntity (in
+        # sensor.py) so a mid-charge restart resumes progress. _last_power_ts is
+        # the timestamp of the previous integration step; None re-anchors the
+        # clock on the next cycle so no phantom cross-downtime interval is
+        # credited.
+        self.delivered_energy_kwh: float = 0.0
+        self._last_power_ts: datetime | None = None
 
         # Reference to the manual current-SoC entity, set when that entity
         # is registered. Allows the coordinator to clear it on session end.
@@ -408,8 +420,24 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         return self.session_active
 
     async def async_set_session_active(self, value: bool) -> None:
-        """Restore-path setter used by the session_active binary sensor."""
+        """Restore-path setter used by the session_active binary sensor.
+
+        Deliberately does NOT reset the energy accumulator — a mid-charge
+        restart must resume progress, so the RestoreEntity re-seeds
+        delivered_energy_kwh separately via async_set_delivered_energy.
+        """
         self.session_active = bool(value)
+        await self.async_refresh()
+
+    async def async_set_delivered_energy(self, value: float) -> None:
+        """Restore-path setter for the delivered-energy accumulator.
+
+        UNGUARDED (like async_set_session_active): used by the
+        DeliveredEnergyRestoreSensor to re-seed accumulated progress after an HA
+        restart. Bad/non-numeric restores are coerced to 0.0 by _safe_float at
+        the call site, so the accumulator never starts corrupted.
+        """
+        self.delivered_energy_kwh = float(value)
         await self.async_refresh()
 
     async def async_start_session(self) -> None:
@@ -417,6 +445,10 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         if self.session_active:
             return
         self.session_active = True
+        # Fresh session -> start counting delivered energy from zero. Re-anchor
+        # the integration timestamp so the first cycle credits nothing.
+        self.delivered_energy_kwh = 0.0
+        self._last_power_ts = None
         await self.async_refresh()
 
     async def async_end_session(self) -> None:
@@ -431,9 +463,67 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
 
     # --- Main update loop ---
 
+    # Cap a single integration interval to this many hours. A larger gap (e.g.
+    # the machine was suspended) is treated as a missed window: re-anchor the
+    # clock and credit 0 for that step rather than crediting a phantom spike
+    # that could end a session early undercharged (T-03-05).
+    _MAX_INTEGRATION_INTERVAL_H = 0.5
+
+    def _integrate_delivered_energy(self, now: datetime) -> None:
+        """Integrate the charger power sensor into delivered_energy_kwh.
+
+        Riemann sum over the elapsed interval since the last cycle. Only
+        accumulates while a session is active and the read is valid (>0). A bad
+        read (UNAVAILABLE/UNKNOWN/""/non-numeric via _safe_float -> 0, or
+        negative) contributes 0 — the accumulator is monotonic and never
+        corrupted (T-03-04). The clock is always advanced, so a bad read moves
+        _last_power_ts forward without crediting energy.
+
+        Unit normalisation: the sensor may report watts or kilowatts. We read
+        ``unit_of_measurement`` (default "W") and treat any "kW"-prefixed unit
+        as kilowatts directly; everything else is watts and divided by 1000. So
+        a "7.0"/"kW" sensor and a "7000"/"W" sensor of the same physical power
+        integrate to identical kWh.
+        """
+        sensor_id = self._config.get(CONF_CHARGER_POWER_SENSOR)
+        if not sensor_id:
+            # No sensor wired: accumulator stays inert. Don't advance the clock
+            # — there's nothing to anchor.
+            return
+
+        state = self.hass.states.get(sensor_id)
+        raw = _safe_float(state.state if state else None, default=0.0)
+        unit = (
+            state.attributes.get("unit_of_measurement", "W")
+            if state is not None
+            else "W"
+        )
+        if isinstance(unit, str) and unit.strip().lower().startswith("kw"):
+            power_kw = raw
+        else:
+            power_kw = raw / 1000.0
+
+        if (
+            self.session_active
+            and power_kw > 0
+            and self._last_power_ts is not None
+        ):
+            interval_h = (now - self._last_power_ts).total_seconds() / 3600.0
+            # Ignore negative/zero gaps and absurd jumps (suspend/clock skew).
+            if 0 < interval_h <= self._MAX_INTEGRATION_INTERVAL_H:
+                self.delivered_energy_kwh += power_kw * interval_h
+
+        # Always advance the clock so the next interval is measured from now,
+        # even after a bad read or while idle.
+        self._last_power_ts = now
+
     async def _async_update_data(self) -> dict[str, Any]:
         cfg = self._config
         now = dt_util.now()
+
+        # Integrate the charger power sensor into the delivered-energy
+        # accumulator before anything else this cycle (SOC-01 / D-02).
+        self._integrate_delivered_energy(now)
 
         # Inputs. battery_capacity is now a runtime-editable number entity;
         # the config value just seeded its initial value on first install.
@@ -657,6 +747,13 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             "finish_mode": decision.executed_finish_mode,
             "battery_capacity": round(battery, 2),
             "session_active": self.session_active,
+            # Delivered-energy accumulator (SOC-01 / D-02) and whether a charger
+            # power sensor is feeding it. energy_source = departure_only means
+            # completion falls back to the departure-time hard stop.
+            "delivered_energy_kwh": round(self.delivered_energy_kwh, 3),
+            "energy_source": (
+                "power_sensor" if cfg.get(CONF_CHARGER_POWER_SENSOR) else "departure_only"
+            ),
             "charge_duration_hours": round(charge_duration_hours, 3),
             "latest_start_time": gentle_start if target_finish is not None else None,
             "gentle_target_current": (

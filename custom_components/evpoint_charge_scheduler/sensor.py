@@ -4,11 +4,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfElectricCurrent, UnitOfEnergy, UnitOfPower, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
@@ -179,6 +185,12 @@ SENSORS: tuple[EVSensorDescription, ...] = (
         icon="mdi:tag-text-outline",
         value_fn=lambda d: d.get("price_source"),
     ),
+    EVSensorDescription(
+        key="energy_source",
+        name="Energy source",
+        icon="mdi:counter",
+        value_fn=lambda d: d.get("energy_source"),
+    ),
 )
 
 
@@ -188,9 +200,11 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: SmartEVChargingCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        EVSensor(coordinator, entry, desc) for desc in SENSORS
-    )
+    entities: list[SensorEntity] = [EVSensor(coordinator, entry, desc) for desc in SENSORS]
+    # The delivered-energy accumulator persists across HA restarts via
+    # RestoreEntity, so it can't be a plain coordinator-data sensor.
+    entities.append(DeliveredEnergyRestoreSensor(coordinator, entry))
+    async_add_entities(entities)
 
 
 class EVSensor(CoordinatorEntity[SmartEVChargingCoordinator], SensorEntity):
@@ -216,3 +230,53 @@ class EVSensor(CoordinatorEntity[SmartEVChargingCoordinator], SensorEntity):
         if self.coordinator.data is None:
             return None
         return self.entity_description.value_fn(self.coordinator.data)
+
+
+class DeliveredEnergyRestoreSensor(
+    CoordinatorEntity[SmartEVChargingCoordinator],
+    SensorEntity,
+    RestoreEntity,
+):
+    """Delivered-energy accumulator, persisted across HA restarts.
+
+    Mirrors the binary_sensor.SessionActiveBinarySensor RestoreEntity pattern:
+    on add, the last stored numeric state is pushed back into the coordinator
+    (via async_set_delivered_energy) so a mid-charge restart resumes progress;
+    the live value is read straight from coordinator.delivered_energy_kwh.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Delivered energy"
+    _attr_icon = "mdi:counter"
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    # Resets to 0 on each session start, so it's a per-session total, not a
+    # monotonically-increasing meter — TOTAL, not TOTAL_INCREASING.
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(
+        self, coordinator: SmartEVChargingCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_delivered_energy_kwh"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)},
+            "name": "EVPoint Charge Scheduler",
+            "manufacturer": "EVPoint Charge Scheduler",
+        }
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is None:
+            return
+        try:
+            restored = float(last_state.state)
+        except (TypeError, ValueError):
+            return  # non-numeric / unavailable -> leave accumulator at 0
+        if restored >= 0:
+            await self.coordinator.async_set_delivered_energy(restored)
+
+    @property
+    def native_value(self) -> Any:
+        return round(self.coordinator.delivered_energy_kwh, 3)

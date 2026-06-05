@@ -170,11 +170,12 @@ async def test_session_start_resets_accumulator(hass: HomeAssistant) -> None:
         await coordinator.async_refresh()
         assert coordinator.delivered_energy_kwh > 0
 
-        # End then start a fresh session -> accumulator reset.
+        # End then start a fresh session -> accumulator reset. (async_start_session
+        # zeroes the accumulator and re-anchors the clock; its internal refresh
+        # then runs one anchoring cycle that credits 0, so the total stays 0.)
         await coordinator.async_end_session()
         await coordinator.async_start_session()
         assert coordinator.delivered_energy_kwh == pytest.approx(0.0, abs=1e-9)
-        assert coordinator._last_power_ts is None
 
 
 async def test_restore_resumes_from_restored_value(hass: HomeAssistant) -> None:
