@@ -68,4 +68,12 @@ def plan(i: PlanInputs) -> Decision:
     else:
         planned_current = 0
 
-    return Decision(action=action, planned_current=planned_current)
+    # executed_finish_mode = the mode the decision actually branched on. The
+    # dashboard read-back sources finish_mode from here (via the coordinator)
+    # so it can never contradict the recommended action — both come from this
+    # one Decision.
+    return Decision(
+        action=action,
+        planned_current=planned_current,
+        executed_finish_mode=i.finish_mode,
+    )

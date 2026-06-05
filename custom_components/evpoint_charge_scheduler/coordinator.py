@@ -651,7 +651,10 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             "apartment_current": int(apartment_current),
             "load_balancing_active": load_balancing_active,
             "control_mode": control_mode,
-            "finish_mode": finish_mode,
+            # Read back the finish mode the decision actually executed (not the
+            # select's cache) so the dashboard can never disagree with
+            # recommended_action — both derive from the same Decision.
+            "finish_mode": decision.executed_finish_mode,
             "battery_capacity": round(battery, 2),
             "session_active": self.session_active,
             "charge_duration_hours": round(charge_duration_hours, 3),

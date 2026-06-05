@@ -32,6 +32,7 @@ class PlanInputs:
 class Decision:
     action: str
     planned_current: int
+    executed_finish_mode: str
 
 
 @dataclass(frozen=True)
