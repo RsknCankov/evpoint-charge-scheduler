@@ -392,6 +392,21 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         """Called by the manual current-SoC number entity once it is added."""
         self._current_soc_entity = entity
 
+    @property
+    def inputs_locked(self) -> bool:
+        """Whether the writable inputs are locked against UI edits.
+
+        Single source of truth consulted by every writable entity
+        (select/number/datetime). Locked while a charging session is active so
+        a running charge is never re-planned mid-session; a future condition can
+        be added here once and all entities follow. The restore/lifecycle
+        setters (``async_set_session_active``, ``async_start_session``,
+        ``async_end_session``) and the entity ``async_added_to_hass`` restore
+        paths deliberately do NOT consult this — a mid-charge restart must still
+        resume (SESS-03).
+        """
+        return self.session_active
+
     async def async_set_session_active(self, value: bool) -> None:
         """Restore-path setter used by the session_active binary sensor."""
         self.session_active = bool(value)

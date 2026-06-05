@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from homeassistant.components.datetime import DateTimeEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
@@ -56,9 +57,12 @@ class DepartureDateTime(DateTimeEntity, RestoreEntity):
         await self._coordinator.async_set_departure(self._attr_native_value)
 
     async def async_set_value(self, value: datetime) -> None:
-        if self._coordinator.session_active:
-            self.async_write_ha_state()  # locked during a session — revert UI
-            return
+        if self._coordinator.inputs_locked:
+            self.async_write_ha_state()  # snap back to the running value
+            raise HomeAssistantError(
+                "Departure time is locked while a charging session is active. "
+                "Stop the session to change it."
+            )
         # HA passes UTC; keep as-is, coordinator uses dt_util.now() for comparison
         self._attr_native_value = value
         await self._coordinator.async_set_departure(value)

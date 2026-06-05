@@ -11,6 +11,7 @@ from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfEnergy
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
@@ -84,9 +85,12 @@ class TargetSoCNumber(_EVPercentBase):
     _attr_native_min_value = 10
 
     async def async_set_native_value(self, value: float) -> None:
-        if self._coordinator.session_active:
-            self.async_write_ha_state()  # locked during a session — revert UI
-            return
+        if self._coordinator.inputs_locked:
+            self.async_write_ha_state()  # snap back to the running value
+            raise HomeAssistantError(
+                "Target SoC is locked while a charging session is active. "
+                "Stop the session to change it."
+            )
         self._attr_native_value = value
         await self._push_to_coordinator()
         self.async_write_ha_state()
@@ -107,9 +111,12 @@ class CurrentSoCNumber(_EVPercentBase):
         self._coordinator.register_current_soc_entity(self)
 
     async def async_set_native_value(self, value: float) -> None:
-        if self._coordinator.session_active:
-            self.async_write_ha_state()  # locked during a session — revert UI
-            return
+        if self._coordinator.inputs_locked:
+            self.async_write_ha_state()  # snap back to the running value
+            raise HomeAssistantError(
+                "Current SoC is locked while a charging session is active. "
+                "Stop the session to change it."
+            )
         self._attr_native_value = value
         await self._push_to_coordinator()
         self.async_write_ha_state()
@@ -169,9 +176,12 @@ class BatteryCapacityNumber(NumberEntity, RestoreEntity):
         await self._coordinator.async_set_battery_capacity(self._attr_native_value)
 
     async def async_set_native_value(self, value: float) -> None:
-        if self._coordinator.session_active:
-            self.async_write_ha_state()  # locked during a session — revert UI
-            return
+        if self._coordinator.inputs_locked:
+            self.async_write_ha_state()  # snap back to the running value
+            raise HomeAssistantError(
+                "Battery capacity is locked while a charging session is active. "
+                "Stop the session to change it."
+            )
         self._attr_native_value = value
         await self._coordinator.async_set_battery_capacity(value)
         self.async_write_ha_state()
@@ -216,9 +226,12 @@ class CostToleranceNumber(NumberEntity, RestoreEntity):
         await self._coordinator.async_set_cost_tolerance(self._attr_native_value)
 
     async def async_set_native_value(self, value: float) -> None:
-        if self._coordinator.session_active:
-            self.async_write_ha_state()  # locked during a session — revert UI
-            return
+        if self._coordinator.inputs_locked:
+            self.async_write_ha_state()  # snap back to the running value
+            raise HomeAssistantError(
+                "Slow charging cost budget is locked while a charging session "
+                "is active. Stop the session to change it."
+            )
         self._attr_native_value = value
         await self._coordinator.async_set_cost_tolerance(value)
         self.async_write_ha_state()

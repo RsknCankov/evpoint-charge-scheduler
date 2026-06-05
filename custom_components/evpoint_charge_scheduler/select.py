@@ -9,6 +9,7 @@ from __future__ import annotations
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
@@ -68,9 +69,12 @@ class FinishModeSelect(SelectEntity, RestoreEntity):
     async def async_select_option(self, option: str) -> None:
         if option not in FINISH_MODES:
             return
-        if self._coordinator.session_active:
-            self.async_write_ha_state()  # locked during a session — revert UI
-            return
+        if self._coordinator.inputs_locked:
+            self.async_write_ha_state()  # snap the dropdown back to the running value
+            raise HomeAssistantError(
+                "Finish mode is locked while a charging session is active. "
+                "Stop the session to change it."
+            )
         self._attr_current_option = option
         await self._coordinator.async_set_finish_mode(option)
         self.async_write_ha_state()
