@@ -20,10 +20,12 @@ freezegun>=1.5,<2
 # let PHACC 0.13.300's transitive pytest pins resolve these two.
 pytest-cov>=5
 pytest-randomly>=3.15
-# Transitive-dep floor: aiodns (pulled in by aiohttp via HA) references
-# `pycares.ares_query_a_result` at class-definition time but under-declares its
-# floor as pycares>=4.0, so a fresh CI resolve can install a pycares too old
-# and blow up at pytest plugin import (pytest_aiohttp → aiohttp → aiodns →
-# pycares). The attribute landed in pycares 4.6; pin to the known-good local
-# version. Drop this once aiodns's own metadata pins a correct floor.
-pycares>=4.9.0
+# Transitive-dep window: aiodns (pulled in by aiohttp via HA) references
+# `pycares.ares_query_a_result` at class-definition time. That symbol exists
+# only on the pycares 4.x line — pycares 5.0 removed/renamed it, and aiodns
+# 3.5.0 under-declares its compatibility (no <5 ceiling), so a fresh CI resolve
+# installs pycares 5.0.1 and blows up at pytest plugin import (pytest_aiohttp →
+# aiohttp → aiodns → pycares: "module 'pycares' has no attribute
+# 'ares_query_a_result'"). Pin to the 4.x line (4.9.0 is the known-good local
+# version). Drop the ceiling once aiodns ships a pycares-5-compatible release.
+pycares>=4.9,<5
