@@ -7,3 +7,8 @@ __pycache__/
 *.pyo
 .venv-test/
 .venv/
+
+# pytest-cov artifacts (D-03 coverage gate)
+.coverage
+.coverage.*
+htmlcov/
