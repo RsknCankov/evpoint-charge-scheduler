@@ -49,3 +49,25 @@ class Output:
     dynamic_current: int
     throttle_reason: str
     available_current: int
+
+
+@dataclass(frozen=True)
+class EndInputs:
+    """Resolved scalars for the deterministic session-end decision (SOC-01).
+
+    ``has_departure_time`` is carried explicitly rather than inferred from
+    ``hours_to_departure`` because the coordinator collapses a missing departure
+    to ``hours_to_departure=0.0`` (a sentinel). Without the flag the backstop
+    would fire immediately for a no-departure session — a silent early end.
+    """
+
+    delivered_energy_kwh: float
+    energy_needed: float
+    hours_to_departure: float
+    has_power_sensor: bool
+    has_departure_time: bool
+
+
+@dataclass(frozen=True)
+class EndDecision:
+    outcome: str  # one of const.END_CONTINUE / END_SUCCESS / END_BACKSTOP

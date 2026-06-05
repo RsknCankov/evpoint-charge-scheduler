@@ -91,6 +91,13 @@ ACTION_CHARGE_DAY_SUPPLEMENT = "charge_day_supplement"
 ACTION_WAIT_FOR_NIGHT = "wait_for_night"
 ACTION_WAIT_FOR_START_TIME = "wait_for_start_time"
 
+# --- End-condition outcomes (internal state strings, like ACTION_*) ---
+# Computed by planner.should_end() over EndInputs; consumed by the coordinator
+# to deterministically auto-end a manual-SoC session (SOC-01 / SESS-01).
+END_CONTINUE = "continue"        # keep the session running
+END_SUCCESS = "end_success"      # delivered >= needed (or needed <= 0) -> success stop
+END_BACKSTOP = "end_backstop"    # departure passed before target -> hard stop + undercharged notification
+
 # --- Throttle reasons ---
 THROTTLE_UNRESTRICTED = "unrestricted"
 THROTTLE_SMART_PAUSE = "smart_charging_pause"

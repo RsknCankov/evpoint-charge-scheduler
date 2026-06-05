@@ -16,10 +16,13 @@ from .const import (
     ACTION_TOO_LATE,
     ACTION_WAIT_FOR_NIGHT,
     ACTION_WAIT_FOR_START_TIME,
+    END_BACKSTOP,
+    END_CONTINUE,
+    END_SUCCESS,
     FINISH_MODE_DEPARTURE,
     FINISH_MODE_END_OF_NIGHT,
 )
-from .models import Decision, PlanInputs
+from .models import Decision, EndDecision, EndInputs, PlanInputs
 
 
 def plan(i: PlanInputs) -> Decision:
@@ -77,3 +80,37 @@ def plan(i: PlanInputs) -> Decision:
         planned_current=planned_current,
         executed_finish_mode=i.finish_mode,
     )
+
+
+def should_end(i: EndInputs) -> EndDecision:
+    """Deterministic manual-SoC session-end decision over scalars (SOC-01 / SESS-01).
+
+    Precedence:
+      (1) PRIMARY success — ``energy_needed <= 0`` (already at target) OR a power
+          sensor whose accumulated ``delivered_energy_kwh >= energy_needed``.
+          The comparison uses ``delivered_energy_kwh``, which upstream (03-02)
+          ONLY advances on valid reads: an UNAVAILABLE/degenerate read does not
+          advance it, so it can never reach ``needed`` and can never manufacture
+          a premature success (criterion 2).
+      (2) DEPARTURE-PASSED backstop — fires ONLY when a departure_time is set and
+          has passed. The ``has_departure_time`` guard is REQUIRED: the
+          coordinator passes ``hours_to_departure=0.0`` as a sentinel when no
+          departure_time is set, and without this guard the backstop would fire
+          immediately on every cycle (firing the undercharged notification with
+          ~0 kWh) — a silent regression vs today's ACTION_TOO_LATE-stays-active
+          behaviour. This single branch covers BOTH the power-sensor
+          "departure passed before target" case and the no-power-sensor
+          departure-time hard-stop fallback (D-03).
+      (3) CONTINUE — everything else, including the no-departure-time case: the
+          session stays active until target is reached or a departure is set.
+
+    Pure and framework-free — no homeassistant import. The coordinator wires real
+    values in and acts on the outcome.
+    """
+    if i.energy_needed <= 0 or (
+        i.has_power_sensor and i.delivered_energy_kwh >= i.energy_needed
+    ):
+        return EndDecision(outcome=END_SUCCESS)
+    if i.has_departure_time and i.hours_to_departure <= 0:
+        return EndDecision(outcome=END_BACKSTOP)
+    return EndDecision(outcome=END_CONTINUE)
