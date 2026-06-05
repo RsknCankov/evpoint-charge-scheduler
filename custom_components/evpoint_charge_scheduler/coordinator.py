@@ -611,9 +611,15 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             and self._last_power_ts is not None
         ):
             interval_h = (now - self._last_power_ts).total_seconds() / 3600.0
-            # Ignore negative/zero gaps and absurd jumps (suspend/clock skew).
-            if 0 < interval_h <= self._MAX_INTEGRATION_INTERVAL_H:
-                self.delivered_energy_kwh += power_kw * interval_h
+            # Ignore negative/zero gaps (suspend/clock skew). For a valid positive
+            # interval, credit the elapsed time but CLAMP the credited duration to
+            # the cap (IN-01): a long-but-valid interval (slow cycle, busy loop)
+            # still advances the accumulator instead of dropping the whole step to
+            # 0, while a genuine suspend/clock-skew spike is bounded to at most
+            # _MAX_INTEGRATION_INTERVAL_H worth of energy.
+            if interval_h > 0:
+                credited_h = min(interval_h, self._MAX_INTEGRATION_INTERVAL_H)
+                self.delivered_energy_kwh += power_kw * credited_h
 
         # Always advance the clock so the next interval is measured from now,
         # even after a bad read or while idle.
