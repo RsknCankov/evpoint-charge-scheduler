@@ -259,6 +259,12 @@ with theirs.
 - `sensor.<name>_energy_source` — `power_sensor` when a charger power sensor is
   feeding the delivered-energy accumulator, `departure_only` when none is
   configured (completion falls back to the departure-time hard stop)
+- `sensor.<name>_charger_heartbeat` — charger-reboot recovery watchdog state:
+  `ok` while the charger draws power as commanded, `stalled` while the watchdog
+  is counting consecutive zero-power cycles (commanding charge but the charger
+  reads ~0 W — the fingerprint of a silent reboot; after a few cycles the
+  charging command is re-asserted automatically), `no_sensor` when no charger
+  power sensor is configured (the watchdog is inert)
 
 ## Lovelace example
 

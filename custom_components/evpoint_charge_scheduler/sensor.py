@@ -191,6 +191,12 @@ SENSORS: tuple[EVSensorDescription, ...] = (
         icon="mdi:counter",
         value_fn=lambda d: d.get("energy_source"),
     ),
+    EVSensorDescription(
+        key="charger_heartbeat",
+        name="Charger heartbeat",
+        icon="mdi:heart-pulse",
+        value_fn=lambda d: d.get("charger_heartbeat"),
+    ),
 )
 
 

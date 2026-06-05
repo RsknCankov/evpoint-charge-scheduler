@@ -91,6 +91,8 @@ from .const import (
     THROTTLE_SMART_PAUSE,
     THROTTLE_UNRESTRICTED,
     UPDATE_INTERVAL,
+    WATCHDOG_ZERO_CYCLES,
+    WATCHDOG_ZERO_POWER_W,
 )
 from .load_balancer import balance
 from .models import EndInputs, LoadInputs, PlanInputs
@@ -166,6 +168,18 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         self._last_applied_current: int | None = None
         self._last_applied_running: bool | None = None
         self._unsub_state_listener = None
+
+        # Charger-reboot recovery watchdog (REL-01). Counts CONSECUTIVE update
+        # cycles where we are commanding a charge (session_active and
+        # dynamic_current > 0) but the charger power sensor reads ~0 W — the
+        # fingerprint of a silent charger reboot that left the session
+        # "commanding" while the charger sits idle. Once it reaches
+        # WATCHDOG_ZERO_CYCLES the coordinator resets the _last_applied_*
+        # trackers so the EXISTING _apply_to_charger path re-pushes the OCPP
+        # profile + re-issues switch turn_on (an idempotent re-assert), then the
+        # counter resets. Inert without a power sensor; never counts an
+        # UNAVAILABLE read or a plan-commanded 0 (deliberate pause/throttle).
+        self._zero_power_cycles: int = 0
 
         # Night-tariff window learned from the tariff sensor's recorder history.
         # None until enough history is available; the configured clock values
@@ -493,21 +507,50 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
     # that could end a session early undercharged (T-03-05).
     _MAX_INTEGRATION_INTERVAL_H = 0.5
 
+    def _read_charger_power_w(self) -> float | None:
+        """Read the configured charger power sensor, normalised to watts.
+
+        Returns the instantaneous power in WATTS, or ``None`` when there is no
+        valid reading: no sensor configured, no state yet, or the state is
+        UNAVAILABLE/UNKNOWN/""/non-numeric. ``None`` is deliberately distinct
+        from a valid ``0.0`` — a missing read is "unknown", not "drawing no
+        power". The watchdog (REL-01) relies on that distinction so an
+        UNAVAILABLE sensor never looks like the ~0 reboot fingerprint; the
+        energy accumulator treats both as "credit 0".
+
+        Unit normalisation: the sensor may report watts or kilowatts. We read
+        ``unit_of_measurement`` (default "W") and treat any "kW"-prefixed unit
+        as kilowatts (×1000 to watts); everything else is taken as watts. So a
+        "7.0"/"kW" sensor and a "7000"/"W" sensor report the same physical power.
+
+        This is the SINGLE charger-power read path — both the delivered-energy
+        accumulator and the watchdog consume it; there is no second read.
+        """
+        sensor_id = self._config.get(CONF_CHARGER_POWER_SENSOR)
+        if not sensor_id:
+            return None
+        state = self.hass.states.get(sensor_id)
+        raw = _safe_float(state.state if state else None, default=None)
+        if raw is None:
+            return None
+        unit = (
+            state.attributes.get("unit_of_measurement", "W")
+            if state is not None
+            else "W"
+        )
+        if isinstance(unit, str) and unit.strip().lower().startswith("kw"):
+            return raw * 1000.0
+        return raw
+
     def _integrate_delivered_energy(self, now: datetime) -> None:
         """Integrate the charger power sensor into delivered_energy_kwh.
 
         Riemann sum over the elapsed interval since the last cycle. Only
         accumulates while a session is active and the read is valid (>0). A bad
-        read (UNAVAILABLE/UNKNOWN/""/non-numeric via _safe_float -> 0, or
-        negative) contributes 0 — the accumulator is monotonic and never
-        corrupted (T-03-04). The clock is always advanced, so a bad read moves
+        read (UNAVAILABLE/UNKNOWN/""/non-numeric -> None, or negative)
+        contributes 0 — the accumulator is monotonic and never corrupted
+        (T-03-04). The clock is always advanced, so a bad read moves
         _last_power_ts forward without crediting energy.
-
-        Unit normalisation: the sensor may report watts or kilowatts. We read
-        ``unit_of_measurement`` (default "W") and treat any "kW"-prefixed unit
-        as kilowatts directly; everything else is watts and divided by 1000. So
-        a "7.0"/"kW" sensor and a "7000"/"W" sensor of the same physical power
-        integrate to identical kWh.
         """
         sensor_id = self._config.get(CONF_CHARGER_POWER_SENSOR)
         if not sensor_id:
@@ -515,17 +558,9 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             # — there's nothing to anchor.
             return
 
-        state = self.hass.states.get(sensor_id)
-        raw = _safe_float(state.state if state else None, default=0.0)
-        unit = (
-            state.attributes.get("unit_of_measurement", "W")
-            if state is not None
-            else "W"
-        )
-        if isinstance(unit, str) and unit.strip().lower().startswith("kw"):
-            power_kw = raw
-        else:
-            power_kw = raw / 1000.0
+        power_w = self._read_charger_power_w()
+        # A missing/invalid read credits 0 (monotonic accumulator, T-03-04).
+        power_kw = (power_w / 1000.0) if power_w is not None else 0.0
 
         if (
             self.session_active
@@ -734,6 +769,47 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         else:
             control_mode = "advisory"
 
+        # Charger-reboot recovery watchdog (REL-01). When a power sensor is
+        # configured, detect the fingerprint of a silent charger reboot:
+        # session_active AND we are commanding a charge (dynamic_current > 0)
+        # BUT the charger draws ~0 W. A valid read at/below WATCHDOG_ZERO_POWER_W
+        # counts; an UNAVAILABLE/None read is "unknown" and never counts (T-03-13),
+        # and a plan-commanded 0 (pause/throttle) never counts because
+        # expecting_charge is False (T-03-14). After WATCHDOG_ZERO_CYCLES
+        # consecutive such cycles, reset the _last_applied_* trackers so the
+        # _apply_to_charger call below re-pushes the OCPP profile and re-issues
+        # switch turn_on (an idempotent re-assert, T-03-15), then zero the
+        # counter so it re-asserts once per stall, not every cycle (T-03-12).
+        has_power_sensor = bool(cfg.get(CONF_CHARGER_POWER_SENSOR))
+        charger_heartbeat = "no_sensor"
+        if has_power_sensor:
+            expecting_charge = self.session_active and dynamic_current > 0
+            power_w = self._read_charger_power_w()
+            # power_is_zero requires a VALID read at/below the threshold. A
+            # None (UNAVAILABLE) read is "unknown" -> not zero.
+            power_is_zero = power_w is not None and power_w <= WATCHDOG_ZERO_POWER_W
+            if expecting_charge and power_is_zero:
+                self._zero_power_cycles += 1
+                charger_heartbeat = "stalled"
+            else:
+                self._zero_power_cycles = 0
+                charger_heartbeat = "ok"
+            if self._zero_power_cycles >= WATCHDOG_ZERO_CYCLES:
+                _LOGGER.warning(
+                    "Charger heartbeat watchdog: commanding %sA but power ~0 for "
+                    "%s cycles — re-asserting charging command (likely a charger "
+                    "reboot).",
+                    dynamic_current,
+                    self._zero_power_cycles,
+                )
+                # Force the existing idempotent apply path to re-push: a reboot
+                # wiped the charger's profile/switch state but not our
+                # last-applied memory, so the value-unchanged guard would
+                # otherwise push nothing.
+                self._last_applied_current = None
+                self._last_applied_running = None
+                self._zero_power_cycles = 0
+
         # Push commands to charger only on change (and only for the wired-up parts)
         await self._apply_to_charger(dynamic_current)
 
@@ -809,6 +885,11 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             "energy_source": (
                 "power_sensor" if cfg.get(CONF_CHARGER_POWER_SENSOR) else "departure_only"
             ),
+            # Charger-reboot watchdog state (REL-01): "ok" while drawing power as
+            # commanded, "stalled" while counting consecutive ~0-power cycles,
+            # "no_sensor" when no charger power sensor is configured (watchdog
+            # inert). Surfaced for transparency of the silent-reboot recovery.
+            "charger_heartbeat": charger_heartbeat,
             "charge_duration_hours": round(charge_duration_hours, 3),
             "latest_start_time": gentle_start if target_finish is not None else None,
             "gentle_target_current": (
