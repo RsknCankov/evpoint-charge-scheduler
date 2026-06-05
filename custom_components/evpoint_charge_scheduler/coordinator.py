@@ -17,6 +17,7 @@ import math
 from datetime import datetime, time, timedelta
 from typing import Any
 
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
@@ -75,6 +76,8 @@ from .const import (
     DEFAULT_TOTAL_LIMIT,
     DEFAULT_VOLTAGE,
     DOMAIN,
+    END_BACKSTOP,
+    END_SUCCESS,
     FINISH_MODE_ASAP,
     FINISH_MODE_DEPARTURE,
     FINISH_MODE_END_OF_NIGHT,
@@ -90,8 +93,8 @@ from .const import (
     UPDATE_INTERVAL,
 )
 from .load_balancer import balance
-from .models import LoadInputs, PlanInputs
-from .planner import plan
+from .models import EndInputs, LoadInputs, PlanInputs
+from .planner import plan, should_end
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -461,6 +464,27 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         self.current_soc = None
         await self.async_refresh()
 
+    @callback
+    def _notify_undercharged(self, delivered: float, needed: float) -> None:
+        """Fire an active HA persistent_notification that a session ended undercharged.
+
+        Called on the departure-passed backstop (D-04): the charge stopped before
+        reaching the target. The message names delivered vs needed kWh so the user
+        knows how far short it ended. Sentence case per the project convention.
+        Message content is the only outbound data — no secrets or internals
+        (T-03-10). The notification_id is fixed so a repeat backstop replaces the
+        prior note rather than stacking.
+        """
+        persistent_notification.async_create(
+            self.hass,
+            (
+                f"The charging session ended before reaching the target. "
+                f"Delivered {delivered:.1f} kWh of {needed:.1f} kWh needed."
+            ),
+            title="EV charging ended undercharged",
+            notification_id=f"{DOMAIN}_undercharged",
+        )
+
     # --- Main update loop ---
 
     # Cap a single integration interval to this many hours. A larger gap (e.g.
@@ -717,6 +741,37 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         # so we don't recurse into ourselves; the next cycle picks up IDLE.
         if self.session_active and action == ACTION_DONE:
             self.hass.async_create_task(self.async_end_session())
+
+        # Deterministic manual-SoC session end (SOC-01 / SESS-01). Sibling to the
+        # ACTION_DONE auto-end above. should_end() is the pure decision over
+        # scalars; the coordinator only wires real values in and acts on the
+        # outcome. has_departure_time MUST be sourced from whether a departure is
+        # actually set — hours_to_dep collapses to 0.0 when departure_time is None,
+        # and without the explicit flag the backstop would fire immediately for a
+        # no-departure session (firing the undercharged notification at ~0 kWh) —
+        # a silent regression vs today's ACTION_TOO_LATE-stays-active behaviour.
+        if self.session_active:
+            end_decision = should_end(EndInputs(
+                delivered_energy_kwh=self.delivered_energy_kwh,
+                energy_needed=energy_needed,
+                hours_to_departure=hours_to_dep,
+                has_power_sensor=bool(cfg.get(CONF_CHARGER_POWER_SENSOR)),
+                has_departure_time=self.departure_time is not None,
+            ))
+            if end_decision.outcome == END_SUCCESS:
+                # Target reached by energy counting — clean stop, no notification.
+                # async_end_session clears current_soc (D-05) and is idempotent,
+                # so a double-fire with the ACTION_DONE branch is harmless.
+                self.hass.async_create_task(self.async_end_session())
+            elif end_decision.outcome == END_BACKSTOP:
+                # Departure passed before target — hard stop AND fire an active
+                # undercharged notification (D-04). Both are fire-and-forget so we
+                # never recurse into _async_update_data.
+                self.hass.async_create_task(self.async_end_session())
+                self._notify_undercharged(self.delivered_energy_kwh, energy_needed)
+        # Note: should_end fires once — the first backstop cycle flips
+        # session_active False via async_end_session, so subsequent cycles skip
+        # this block entirely and the notification never spams (T-03-09).
 
         return {
             "energy_needed": round(energy_needed, 2),
