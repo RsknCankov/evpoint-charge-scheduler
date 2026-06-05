@@ -82,6 +82,7 @@ as you have wired up and the integration degrades gracefully:
 | **Apartment current sensor** | Load balancing is disabled — the charger uses the full configured limit. |
 | **Price sensor** | Cost-aware slow charging is disabled. `end_of_night` spreads over the night window only (never into day tariff). With a price sensor configured, the integration learns day/night prices from its history and `end_of_night` may charge even slower into the day, within your cost budget — see "Cost-aware slow charging" below. |
 | **Car SoC sensor** | A manual `Current SoC` number entity is created for you to keep up to date. |
+| **Charger power sensor** | Energy-counting completion is disabled — the session ends on the departure-time hard stop only. When configured (a `W` or `kW` power sensor), the integration integrates delivered energy each cycle so a session can finish once the requested energy has actually been delivered. Both `W` and `kW` sensors are accepted and normalised internally. |
 | **Charger switch entity** | The integration sets the current limit but doesn't start/stop the transaction. When a switch **is** configured, charging is stopped by switching it off, and the integration skips the redundant 0-amp OCPP push. When it's omitted, the session is stopped by pushing a `limit_amps: 0` OCPP profile instead. |
 | **OCPP service / devid** | "Advisory mode" — decisions are exposed via sensors but no commands are sent. Both the service name **and** the OCPP `devid` must be set for the integration to push charging profiles; missing either disables that path. Hook your own automations onto `sensor.dynamic_target_current` / `sensor.recommended_action`. |
 
@@ -251,6 +252,13 @@ with theirs.
 - `sensor.<name>_latest_start_time` — when charging is planned to begin under
   the active finish mode. `unavailable` when mode is `asap` (charging starts
   immediately on entering the night window)
+- `sensor.<name>_delivered_energy_kwh` (kWh) — energy delivered so far in the
+  current session, integrated from the charger power sensor each cycle. Resets
+  to 0 on session start and survives an HA restart (restored alongside the
+  session). Stays `0` when no charger power sensor is configured
+- `sensor.<name>_energy_source` — `power_sensor` when a charger power sensor is
+  feeding the delivered-energy accumulator, `departure_only` when none is
+  configured (completion falls back to the departure-time hard stop)
 
 ## Lovelace example
 

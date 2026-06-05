@@ -18,6 +18,7 @@ CONF_TARIFF_SENSOR = "tariff_sensor"
 CONF_NIGHT_TARIFF_VALUE = "night_tariff_value"
 CONF_APARTMENT_CURRENT_SENSOR = "apartment_current_sensor"
 CONF_SOC_SENSOR = "soc_sensor"  # optional external SoC source
+CONF_CHARGER_POWER_SENSOR = "charger_power_sensor"  # optional charger power (W/kW) for energy counting
 CONF_OCPP_SET_RATE_SERVICE = "ocpp_set_rate_service"
 CONF_OCPP_DEVID = "ocpp_devid"
 CONF_CHARGING_PROFILE_ID = "charging_profile_id"

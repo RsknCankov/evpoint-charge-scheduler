@@ -11,6 +11,7 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_APARTMENT_CURRENT_SENSOR,
     CONF_BATTERY_CAPACITY,
+    CONF_CHARGER_POWER_SENSOR,
     CONF_CHARGER_SWITCH,
     CONF_CHARGING_LOSS,
     CONF_FINISH_MODE,
@@ -76,6 +77,11 @@ def _build_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             vol.Optional(CONF_PRICE_SENSOR, default=d.get(CONF_PRICE_SENSOR, vol.UNDEFINED)): _entity_selector("sensor"),
             vol.Optional(CONF_APARTMENT_CURRENT_SENSOR, default=d.get(CONF_APARTMENT_CURRENT_SENSOR, vol.UNDEFINED)): _entity_selector("sensor"),
             vol.Optional(CONF_SOC_SENSOR, default=d.get(CONF_SOC_SENSOR, vol.UNDEFINED)): _entity_selector("sensor"),
+            # Optional charger power sensor (W or kW). When configured, the
+            # coordinator integrates delivered energy over each cycle so a
+            # session can finish on energy counted rather than the departure
+            # backstop alone. Omitted -> energy counting is inert.
+            vol.Optional(CONF_CHARGER_POWER_SENSOR, default=d.get(CONF_CHARGER_POWER_SENSOR, vol.UNDEFINED)): _entity_selector("sensor"),
             vol.Optional(CONF_CHARGER_SWITCH, default=d.get(CONF_CHARGER_SWITCH, vol.UNDEFINED)): _entity_selector("switch"),
 
             # OCPP service to set current limit - optional.
