@@ -158,6 +158,52 @@ def test_safety_override_engages_every_mode(
     assert d.planned_current == 16  # max_a
 
 
+# --- Honor direction: with slack, the SELECTED mode is honored (TEST-01) -----
+#
+# The override tests above pin the OVERRIDE direction (deficit/safety bypass the
+# mode). This block pins the complementary HONOR direction across ALL three modes
+# in one parametrization: when deficit_kwh == 0 AND slack >= safety_margin, the
+# action is the mode-specific expectation — proving the selected mode is honored
+# when there is genuine slack (the Phase-1 "lost night" bug direction). The
+# single-mode tests above assert each mode individually; this consolidates the
+# both-directions contract into one all-modes case so the honor direction is an
+# explicit peer of test_deficit_overrides_every_mode / test_safety_override_*.
+
+
+@pytest.mark.parametrize(
+    ("finish_mode", "is_night_now", "expected_action"),
+    [
+        # departure: tariff-irrelevant; gentles when due, NEVER waits for night.
+        (FINISH_MODE_DEPARTURE, True, ACTION_CHARGE_GENTLE),
+        (FINISH_MODE_DEPARTURE, False, ACTION_CHARGE_GENTLE),
+        # end_of_night: waits for night in day, gentles in night.
+        (FINISH_MODE_END_OF_NIGHT, False, ACTION_WAIT_FOR_NIGHT),
+        (FINISH_MODE_END_OF_NIGHT, True, ACTION_CHARGE_GENTLE),
+        # asap: bursts at max in night, waits for night in day.
+        (FINISH_MODE_ASAP, True, ACTION_CHARGE_MAX),
+        (FINISH_MODE_ASAP, False, ACTION_WAIT_FOR_NIGHT),
+    ],
+)
+def test_mode_honored_when_slack_and_no_deficit(
+    finish_mode: str, is_night_now: bool, expected_action: str
+) -> None:
+    """deficit==0 & slack>=safety_margin -> the mode-specific action is honored."""
+    d = plan(
+        _inputs(
+            finish_mode=finish_mode,
+            is_night_now=is_night_now,
+            deficit_kwh=0.0,
+            slack=13.0,  # >> safety_margin 0.5
+            safety_margin=0.5,
+            gentle_should_start=True,
+        )
+    )
+    assert d.action == expected_action
+    # departure NEVER emits wait_for_night — the impossible "lost night" state.
+    if finish_mode == FINISH_MODE_DEPARTURE:
+        assert d.action != ACTION_WAIT_FOR_NIGHT
+
+
 # --- Read-back contract: executed_finish_mode == branched mode ---------------
 
 
