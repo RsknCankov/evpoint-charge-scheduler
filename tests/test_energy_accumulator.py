@@ -220,6 +220,56 @@ async def test_inert_without_power_sensor(hass: HomeAssistant) -> None:
         assert coordinator.data["energy_source"] == "departure_only"
 
 
+async def test_long_interval_credits_capped_nonzero(hass: HomeAssistant) -> None:
+    """A >30-min interval credits power_kw * 0.5 (capped), not a dropped 0 (IN-01).
+
+    Before this fix the credit was gated on ``interval_h <= cap``, so a single
+    interval longer than the cap dropped the WHOLE step to 0 — undercounting
+    delivered energy after any cycle that took longer than 30 min (a slow
+    recorder, a busy event loop). The fix credits the CAPPED duration instead, so
+    a long-but-valid interval still advances the accumulator while a true
+    suspend/clock-skew spike stays bounded to at most 0.5 h worth of energy.
+    """
+    with freeze_time("2026-06-04T23:30:00+03:00") as frozen:
+        coordinator = await _setup(hass)
+        coordinator.delivered_energy_kwh = 0.0
+        coordinator._last_power_ts = None
+
+        _set_power(hass, "7000", "W")
+        await coordinator.async_refresh()  # anchors the timestamp, credits ~0
+        assert coordinator.delivered_energy_kwh == pytest.approx(0.0, abs=1e-9)
+
+        # 45-min interval (> the 0.5 h cap) at a constant 7 kW.
+        frozen.tick(timedelta(minutes=45))
+        await coordinator.async_refresh()
+        # Capped credit: 7 kW * 0.5 h = 3.5 kWh — NON-ZERO, not dropped.
+        assert coordinator.delivered_energy_kwh == pytest.approx(
+            7.0 * coordinator._MAX_INTEGRATION_INTERVAL_H, abs=1e-4
+        )
+
+
+async def test_within_cap_interval_unchanged(hass: HomeAssistant) -> None:
+    """An interval within the cap still credits power_kw * interval_h exactly.
+
+    Regression guard: the capped-credit change must not alter the normal path —
+    a 20-min interval (< the 0.5 h cap) credits the full measured duration, not
+    the cap.
+    """
+    with freeze_time("2026-06-04T23:30:00+03:00") as frozen:
+        coordinator = await _setup(hass)
+        coordinator.delivered_energy_kwh = 0.0
+        coordinator._last_power_ts = None
+
+        _set_power(hass, "7000", "W")
+        await coordinator.async_refresh()  # anchor
+        frozen.tick(timedelta(minutes=20))
+        await coordinator.async_refresh()
+        # 7 kW * (20/60) h = 2.333... kWh, the full measured interval.
+        assert coordinator.delivered_energy_kwh == pytest.approx(
+            7.0 * 20 / 60, abs=1e-4
+        )
+
+
 async def test_surfaced_in_coordinator_data(hass: HomeAssistant) -> None:
     """delivered_energy_kwh + energy_source appear in coordinator.data."""
     with freeze_time("2026-06-04T23:30:00+03:00") as frozen:
