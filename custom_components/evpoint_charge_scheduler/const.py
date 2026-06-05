@@ -58,6 +58,17 @@ DEFAULT_NIGHT_TARIFF_VALUE = "night"
 DEFAULT_OCPP_SERVICE = "ocpp.set_charge_rate"
 DEFAULT_CHARGING_PROFILE_ID = 8
 
+# --- Charger-reboot recovery watchdog (REL-01) ---
+# How many CONSECUTIVE update cycles the coordinator must observe "commanding a
+# charge but the charger draws ~0 power" before it re-asserts the charging
+# command. At the 30s UPDATE_INTERVAL, 3 cycles debounces transient blips while
+# still recovering within ~1.5 minutes of a silent charger reboot.
+WATCHDOG_ZERO_CYCLES = 3
+# A charger power read at/below this many watts counts as "drawing no power"
+# (the reboot fingerprint), tolerating sensor noise around zero. An
+# UNAVAILABLE/UNKNOWN read is NOT zero — it is "unknown" and never counts.
+WATCHDOG_ZERO_POWER_W = 50.0
+
 # --- Finish mode options ---
 # asap          → start charging as soon as the tariff is favourable (default).
 # end_of_night  → time the charge to finish just before night tariff ends; minimises
