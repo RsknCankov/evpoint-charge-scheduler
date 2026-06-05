@@ -110,7 +110,11 @@ def _parse_time(value: str | None, default: str) -> time:
     return time(hour=h, minute=m)
 
 
-def _safe_float(state_value: Any, default: float = 0.0) -> float:
+def _safe_float(state_value: Any, default: float | None = 0.0) -> float | None:
+    # Returns `default` (which may be None) for a missing/non-numeric read, so a
+    # caller passing default=None gets a None it can distinguish from a valid
+    # 0.0 — the watchdog's UNAVAILABLE-vs-zero correctness (REL-01) relies on
+    # exactly that. The signature is honest about the None-returning contract.
     if state_value in (None, STATE_UNAVAILABLE, STATE_UNKNOWN, ""):
         return default
     try:
@@ -453,6 +457,13 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         DeliveredEnergyRestoreSensor to re-seed accumulated progress after an HA
         restart. Bad/non-numeric restores are coerced to 0.0 by _safe_float at
         the call site, so the accumulator never starts corrupted.
+
+        Intentionally NOT gated on session_active: `sensor` is set up before
+        `binary_sensor` (see const.PLATFORMS), so during a legitimate mid-charge
+        resume this runs BEFORE session_active is restored — a session_active
+        gate here would wipe the resuming session's progress. The stale-value
+        vector (CR-01) is instead closed at the source: async_end_session zeros
+        the accumulator, so a completed session persists 0, never a stale total.
         """
         self.delivered_energy_kwh = float(value)
         await self.async_refresh()
@@ -473,6 +484,13 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         if not self.session_active:
             return
         self.session_active = False
+        # Zero the delivered-energy accumulator on end, symmetric with
+        # async_start_session (CR-01). This keeps the invariant "delivered is 0
+        # whenever no session is active": a completed/backstopped session
+        # persists 0, so the RestoreEntity can never re-seed a later session
+        # with a stale total and trip a false energy-counting SUCCESS end.
+        self.delivered_energy_kwh = 0.0
+        self._last_power_ts = None
         if self._current_soc_entity is not None:
             await self._current_soc_entity.async_reset()
         self.current_soc = None
@@ -523,8 +541,10 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         as kilowatts (×1000 to watts); everything else is taken as watts. So a
         "7.0"/"kW" sensor and a "7000"/"W" sensor report the same physical power.
 
-        This is the SINGLE charger-power read path — both the delivered-energy
-        accumulator and the watchdog consume it; there is no second read.
+        This is the SINGLE charger-power read primitive. _async_update_data
+        calls it exactly once per cycle and passes the result to both the
+        delivered-energy accumulator and the watchdog, so both consumers
+        evaluate the same snapshot (WR-02) — there is no second states.get.
         """
         sensor_id = self._config.get(CONF_CHARGER_POWER_SENSOR)
         if not sensor_id:
@@ -542,7 +562,7 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             return raw * 1000.0
         return raw
 
-    def _integrate_delivered_energy(self, now: datetime) -> None:
+    def _integrate_delivered_energy(self, now: datetime, power_w: float | None) -> None:
         """Integrate the charger power sensor into delivered_energy_kwh.
 
         Riemann sum over the elapsed interval since the last cycle. Only
@@ -551,6 +571,10 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         contributes 0 — the accumulator is monotonic and never corrupted
         (T-03-04). The clock is always advanced, so a bad read moves
         _last_power_ts forward without crediting energy.
+
+        ``power_w`` is the single charger-power snapshot read once per cycle by
+        the caller and shared with the watchdog (WR-02), so both consumers
+        evaluate the same reading.
         """
         sensor_id = self._config.get(CONF_CHARGER_POWER_SENSOR)
         if not sensor_id:
@@ -558,7 +582,6 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             # — there's nothing to anchor.
             return
 
-        power_w = self._read_charger_power_w()
         # A missing/invalid read credits 0 (monotonic accumulator, T-03-04).
         power_kw = (power_w / 1000.0) if power_w is not None else 0.0
 
@@ -580,9 +603,14 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         cfg = self._config
         now = dt_util.now()
 
+        # SINGLE charger-power read for the whole cycle (WR-02): the accumulator
+        # and the watchdog below both evaluate this one snapshot rather than
+        # each doing its own states.get (which could disagree mid-cycle).
+        power_w = self._read_charger_power_w()
+
         # Integrate the charger power sensor into the delivered-energy
         # accumulator before anything else this cycle (SOC-01 / D-02).
-        self._integrate_delivered_energy(now)
+        self._integrate_delivered_energy(now, power_w)
 
         # Inputs. battery_capacity is now a runtime-editable number entity;
         # the config value just seeded its initial value on first install.
@@ -784,7 +812,8 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         charger_heartbeat = "no_sensor"
         if has_power_sensor:
             expecting_charge = self.session_active and dynamic_current > 0
-            power_w = self._read_charger_power_w()
+            # Reuse the single per-cycle snapshot read at the top of this cycle
+            # (WR-02) — same reading the accumulator integrated.
             # power_is_zero requires a VALID read at/below the threshold. A
             # None (UNAVAILABLE) read is "unknown" -> not zero.
             power_is_zero = power_w is not None and power_w <= WATCHDOG_ZERO_POWER_W

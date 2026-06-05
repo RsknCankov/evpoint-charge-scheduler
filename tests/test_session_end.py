@@ -181,3 +181,21 @@ async def test_after_end_lock_releases_and_mode_select_succeeds(
         # A stale lingering session must never block the next mode select.
         await coordinator.async_set_finish_mode("departure")
         assert coordinator.finish_mode == "departure"
+
+
+async def test_session_end_zeros_delivered_energy(hass: HomeAssistant) -> None:
+    """CR-01: ending a session zeros the delivered-energy accumulator.
+
+    The accumulator must be 0 whenever no session is active, so a completed
+    session persists 0 and the RestoreEntity can never re-seed a later session
+    with a stale total that would trip a false energy-counting SUCCESS end.
+    """
+    with freeze_time("2026-06-04T23:30:00+03:00"):
+        coordinator = await _setup(hass)
+        coordinator.delivered_energy_kwh = 30.0  # mid-session progress
+
+        await coordinator.async_end_session()
+        await hass.async_block_till_done()
+
+        assert coordinator.session_active is False
+        assert coordinator.delivered_energy_kwh == 0.0
