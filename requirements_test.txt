@@ -15,3 +15,8 @@ pytest-homeassistant-custom-component==0.13.300
 # (which targets the 0.13.336 line) is a resolver conflict here. Use a range
 # and let PHACC's transitive pin resolve it.
 freezegun>=1.5,<2
+# Phase-4 CI gates (D-03 coverage floor + D-04 reorder-stability). Loose pins —
+# do NOT pin homeassistant/pytest/pytest-asyncio (or cap pytest-cov below 7);
+# let PHACC 0.13.300's transitive pytest pins resolve these two.
+pytest-cov>=5
+pytest-randomly>=3.15
