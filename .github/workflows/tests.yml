@@ -28,7 +28,12 @@ jobs:
           # PHACC 0.13.336 once a 3.14 runner is available.
           python-version: "3.13"
       - run: pip install -r requirements_test.txt
-      - run: python -m pytest
+      # D-03 coverage floor + D-04 reorder-stability. pytest-randomly is
+      # auto-active once installed (shuffles order each run; no flag needed) —
+      # the tests/conftest.py tz-reset fixture is what keeps that green. The
+      # floor starts at 85% (local measured ~87%); tunable per D-03, set just
+      # below measured so a PR that guts a tested path fails.
+      - run: python -m pytest --cov=custom_components/evpoint_charge_scheduler --cov-fail-under=85
       # CLAUDE.md "Validate before commit" gate (D-10): py_compile + JSON
       # validity + strings/translations byte-identical mirror.
       - run: python -m py_compile custom_components/evpoint_charge_scheduler/*.py
