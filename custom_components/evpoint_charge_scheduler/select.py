@@ -69,12 +69,20 @@ class FinishModeSelect(SelectEntity, RestoreEntity):
     async def async_select_option(self, option: str) -> None:
         if option not in FINISH_MODES:
             return
-        if self._coordinator.inputs_locked:
-            self.async_write_ha_state()  # snap the dropdown back to the running value
-            raise HomeAssistantError(
-                "Finish mode is locked while a charging session is active. "
-                "Stop the session to change it."
-            )
+        # Finish mode is the "lost night" input: the Phase-1 defect was a locked
+        # pick vanishing silently (no error, no effect). The fix is raise-AND-allow
+        # — the pick always reaches the coordinator so the running session uses the
+        # user's intent, and when inputs are locked a visible HomeAssistantError
+        # surfaces that it took effect instead of swallowing it. The single
+        # coordinator.inputs_locked predicate is the one source of truth every
+        # writable entity consults; the dropdown read-back (UX-02) reflects the
+        # executed mode so the dashboard can never disagree with recommended_action.
         self._attr_current_option = option
         await self._coordinator.async_set_finish_mode(option)
         self.async_write_ha_state()
+        if self._coordinator.inputs_locked:
+            raise HomeAssistantError(
+                "Finish mode is locked while a charging session is active. "
+                "The new mode was applied to the running session — stop the "
+                "session to change inputs without this warning."
+            )

@@ -52,8 +52,14 @@ def _make_entry() -> MockConfigEntry:
 
 
 @freeze_time("2026-06-04T14:00:00+03:00")
-async def test_locked_select_raises_and_snaps_back(hass: HomeAssistant) -> None:
-    """Editing finish_mode under an active session raises + reverts the pick."""
+async def test_locked_select_raises_but_honours_the_pick(hass: HomeAssistant) -> None:
+    """Editing finish_mode under an active session honours the pick AND raises.
+
+    Finish mode is the "lost night" input: the Phase-1 defect was the pick
+    vanishing silently. The fix is raise-and-allow — the new mode reaches the
+    coordinator (so the running session uses the user's intent) and a visible
+    HomeAssistantError tells them it took effect. NEVER silent.
+    """
     hass.config.time_zone = "Europe/Sofia"
     dt_util.set_default_time_zone(dt_util.get_time_zone("Europe/Sofia"))
 
@@ -79,7 +85,7 @@ async def test_locked_select_raises_and_snaps_back(hass: HomeAssistant) -> None:
     )
     assert select_entity_id is not None, "finish-mode select entity was not created"
 
-    # A locked edit must surface a visible error — NOT silently vanish.
+    # A locked finish-mode edit must surface a visible error — NOT silently vanish.
     with pytest.raises(HomeAssistantError):
         await hass.services.async_call(
             "select",
@@ -89,9 +95,10 @@ async def test_locked_select_raises_and_snaps_back(hass: HomeAssistant) -> None:
         )
     await hass.async_block_till_done()
 
-    # The pick was rejected: the running mode is unchanged.
-    assert coordinator.finish_mode == "asap", (
-        "a locked-session edit must leave coordinator.finish_mode unchanged"
+    # raise-AND-allow: the user's intent reached the coordinator.
+    assert coordinator.finish_mode == "departure", (
+        "a locked finish-mode pick must be honoured (reach the coordinator), "
+        "not silently swallowed"
     )
 
 
@@ -118,23 +125,22 @@ async def test_ending_session_releases_the_lock(hass: HomeAssistant) -> None:
     )
     assert select_entity_id is not None
 
-    # Locked: rejected.
+    # Locked: the edit raises a visible error (raise-and-allow for finish mode).
     with pytest.raises(HomeAssistantError):
         await hass.services.async_call(
             "select",
             "select_option",
-            {"entity_id": select_entity_id, "option": "departure"},
+            {"entity_id": select_entity_id, "option": "end_of_night"},
             blocking=True,
         )
     await hass.async_block_till_done()
-    assert coordinator.finish_mode == "asap"
 
     # End the session -> lock released.
     await coordinator.async_end_session()
     await hass.async_block_till_done()
     assert coordinator.inputs_locked is False
 
-    # The same edit now succeeds and reaches the coordinator.
+    # The same edit now succeeds with NO error raised (lock released).
     await hass.services.async_call(
         "select",
         "select_option",
@@ -143,5 +149,5 @@ async def test_ending_session_releases_the_lock(hass: HomeAssistant) -> None:
     )
     await hass.async_block_till_done()
     assert coordinator.finish_mode == "departure", (
-        "after ending the session the edit must be honoured (lock released)"
+        "after ending the session the edit must succeed silently (lock released)"
     )

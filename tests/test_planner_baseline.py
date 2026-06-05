@@ -32,8 +32,10 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
 from freezegun import freeze_time
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -106,17 +108,22 @@ async def test_departure_mode_never_waits_for_night(hass: HomeAssistant) -> None
     )
     assert select_entity_id is not None, "finish-mode select entity was not created"
 
-    await hass.services.async_call(
-        "select",
-        "select_option",
-        {"entity_id": select_entity_id, "option": "departure"},
-        blocking=True,
-    )
+    # Raise-and-allow contract (Phase 3, UX-01): changing finish mode under an
+    # active session APPLIES the pick to the running session AND surfaces a
+    # visible HomeAssistantError so the change is never silent. The pick still
+    # reaches the coordinator (Assertion 1 below) — that is the Phase-1 "lost
+    # night" fix; the raise is the added visible feedback, not a revert.
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            "select",
+            "select_option",
+            {"entity_id": select_entity_id, "option": "departure"},
+            blocking=True,
+        )
     await hass.async_block_till_done()
 
-    # Assertion 1 — the RIGHT-reason failure: the user's pick must reach the
-    # coordinator. FAILS today: the silent revert (select.py:71-73) returns
-    # early, so finish_mode stays "asap".
+    # Assertion 1 — the RIGHT-reason fix: the user's pick must reach the
+    # coordinator (it does NOT silently revert to "asap", the Phase-1 defect).
     assert coordinator.finish_mode == "departure", (
         "user picked 'departure' through the real select under an active "
         f"session, but coordinator.finish_mode == {coordinator.finish_mode!r} "
