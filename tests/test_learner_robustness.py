@@ -68,29 +68,32 @@ async def _setup(hass: HomeAssistant):
     return hass.data[DOMAIN][entry.entry_id]
 
 
+class _StubRecorder:
+    """Minimal recorder stand-in whose executor entry point raises ``exc``."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    async def async_add_executor_job(self, *_args, **_kwargs):
+        raise self._exc
+
+
 def _patch_executor_to_raise(monkeypatch, exc: BaseException) -> None:
     """Make get_instance(hass).async_add_executor_job raise ``exc``.
 
     Both learners reach the recorder through
     ``get_instance(self.hass).async_add_executor_job(state_changes_during_period, ...)``.
-    Patching the recorder instance's executor entry point lets us simulate a
-    recorder-side failure without touching the production call sites.
+    The test hass has no recorder registered, so the real ``get_instance`` would
+    itself raise ``KeyError`` before the executor call — which would defeat the
+    point of injecting a *specific* exception type. We therefore replace
+    ``get_instance`` with one returning a stub recorder whose executor job raises
+    exactly ``exc``, so the learner's narrowed ``except`` is what's under test.
     """
     from homeassistant.components import recorder
 
-    real_get_instance = recorder.get_instance
-
-    def fake_get_instance(hass):
-        inst = real_get_instance(hass)
-
-        async def boom(*_args, **_kwargs):
-            raise exc
-
-        monkeypatch.setattr(inst, "async_add_executor_job", boom, raising=False)
-        return inst
-
-    # Patch the names imported *inside* the coordinator's learner methods.
-    monkeypatch.setattr(recorder, "get_instance", fake_get_instance)
+    stub = _StubRecorder(exc)
+    # Patch the name the coordinator's learner methods import at call time.
+    monkeypatch.setattr(recorder, "get_instance", lambda _hass: stub)
 
 
 # --- Intended-error: graceful degrade -------------------------------------

@@ -21,6 +21,7 @@ from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_interval,
@@ -99,6 +100,25 @@ from .models import EndInputs, LoadInputs, PlanInputs
 from .planner import plan, should_end
 
 _LOGGER = logging.getLogger(__name__)
+
+# WR-05: the intended recorder-unavailable / query-failure exception set the two
+# learners degrade on. RuntimeError covers "recorder not running"; KeyError covers
+# get_instance() raising when the recorder instance isn't registered (recorder not
+# set up / not ready); HomeAssistantError covers HA-layer recorder errors;
+# sqlalchemy's SQLAlchemyError (when installed) covers DB-layer failures. Anything
+# OUTSIDE this tuple is treated as a real programming bug and is allowed to
+# propagate instead of being silently swallowed.
+_RECORDER_LEARN_ERRORS: tuple[type[BaseException], ...] = (
+    HomeAssistantError,
+    RuntimeError,
+    KeyError,
+)
+try:  # sqlalchemy ships with the recorder; guard anyway for degraded installs.
+    from sqlalchemy.exc import SQLAlchemyError as _SQLAlchemyError
+
+    _RECORDER_LEARN_ERRORS = (*_RECORDER_LEARN_ERRORS, _SQLAlchemyError)
+except ImportError:  # pragma: no cover - recorder/sqlalchemy always present in HA
+    pass
 
 
 def _parse_time(value: str | None, default: str) -> time:
@@ -287,7 +307,7 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
                 None,
                 True,
             )
-        except Exception as err:
+        except _RECORDER_LEARN_ERRORS as err:
             _LOGGER.debug("Price learning skipped (recorder query failed): %s", err)
             return
 
@@ -358,7 +378,7 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
                 None,   # limit
                 True,   # include_start_time_state
             )
-        except Exception as err:  # recorder disabled / not ready / sensor unrecorded
+        except _RECORDER_LEARN_ERRORS as err:  # recorder disabled / not ready / sensor unrecorded
             _LOGGER.debug("Night-window learning skipped (recorder query failed): %s", err)
             return
 
