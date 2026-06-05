@@ -20,3 +20,10 @@ freezegun>=1.5,<2
 # let PHACC 0.13.300's transitive pytest pins resolve these two.
 pytest-cov>=5
 pytest-randomly>=3.15
+# Transitive-dep floor: aiodns (pulled in by aiohttp via HA) references
+# `pycares.ares_query_a_result` at class-definition time but under-declares its
+# floor as pycares>=4.0, so a fresh CI resolve can install a pycares too old
+# and blow up at pytest plugin import (pytest_aiohttp → aiohttp → aiodns →
+# pycares). The attribute landed in pycares 4.6; pin to the known-good local
+# version. Drop this once aiodns's own metadata pins a correct floor.
+pycares>=4.9.0
