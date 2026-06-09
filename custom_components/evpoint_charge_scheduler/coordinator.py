@@ -681,17 +681,70 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         delta_soc = max(0.0, self.target_soc - current_soc)
         energy_needed = delta_soc / 100.0 * battery * loss
 
-        # Time to departure
+        # Finish mode — read here so target_finish resolution can precede
+        # night_hours/deficit_kwh (Pitfall 5: target_finish must come first).
+        # The active value lives on the coordinator so the select entity can
+        # change it without an integration reload.
+        finish_mode = self.finish_mode
+
+        # Resolve the finish-mode target_finish anchor BEFORE night_hours/deficit.
+        # end_of_night: anchor = min(next_night_end, departure if earlier) (D-07, D-09)
+        # departure:    anchor = departure_time
+        # asap:         no anchor (None)
+        night_only_target: datetime | None = None
+        if finish_mode == FINISH_MODE_END_OF_NIGHT:
+            next_ne = self._next_night_end(now, night_end)
+            if self.departure_time is not None and self.departure_time < next_ne:
+                night_only_target = self.departure_time
+            else:
+                night_only_target = next_ne
+            target_finish: datetime | None = night_only_target
+        elif finish_mode == FINISH_MODE_DEPARTURE and self.departure_time is not None:
+            target_finish = self.departure_time
+        else:
+            target_finish = None  # asap, or departure mode with no departure set yet
+
+        # Time to departure / planning horizon (D-11).
+        # When a departure_time is set, use it as always.
+        # When Night Only has NO departure_time, synthesise hours_to_dep from
+        # night_only_target so the planner's too_late branch does not fire.
         hours_to_dep = 0.0
         if self.departure_time is not None:
             delta = (self.departure_time - now).total_seconds() / 3600.0
             hours_to_dep = max(0.0, delta)
+        elif finish_mode == FINISH_MODE_END_OF_NIGHT and night_only_target is not None:
+            hours_to_dep = max(
+                0.0, (night_only_target - now).total_seconds() / 3600.0
+            )
 
-        # Night hours available between now and departure
-        night_hours = self._night_hours_between(
-            now, self.departure_time, night_start, night_end
-        ) if self.departure_time else 0.0
-        day_hours = max(0.0, hours_to_dep - night_hours)
+        # Night hours available in the planning window (D-10).
+        # Night Only: scoped to the single window ending at night_only_target
+        # (prevents multi-night over-counting); other modes use departure.
+        if finish_mode == FINISH_MODE_END_OF_NIGHT:
+            night_hours = self._night_hours_between(
+                now, night_only_target, night_start, night_end
+            )
+        else:
+            night_hours = (
+                self._night_hours_between(
+                    now, self.departure_time, night_start, night_end
+                )
+                if self.departure_time
+                else 0.0
+            )
+
+        # Day hours until tonight's charging window opens (D-13).
+        # Night Only: 0 when already inside the window; otherwise the gap
+        # from now until tonight's window opens (for deficit math).
+        # Other modes: remaining wall-clock hours minus the in-window portion.
+        if finish_mode == FINISH_MODE_END_OF_NIGHT:
+            if self._is_in_night_window(now, night_start, night_end):
+                day_hours = 0.0
+            else:
+                next_ns = self._next_night_start(now, night_start)
+                day_hours = max(0.0, (next_ns - now).total_seconds() / 3600.0)
+        else:
+            day_hours = max(0.0, hours_to_dep - night_hours)
 
         # Hours needed at max
         hours_needed_at_max = energy_needed / max_kw if max_kw > 0 else 0.0
@@ -728,27 +781,7 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         day_kw = deficit_kwh / day_hours if (deficit_kwh > 0 and day_hours > 0) else 0.0
         day_current = self._kw_to_current(day_kw, voltage, factor, min_a, max_a) if day_kw > 0 else 0
 
-        # Resolve the finish-mode strategy and compute the latest start time.
-        # asap:          target_finish = now (charge immediately when allowed)
-        # end_of_night:  target_finish = the next future occurrence of night_end at or before departure (falls back to departure if none fits)
-        # departure:     target_finish = the departure time itself
-        # The active value lives on the coordinator so the select entity can
-        # change it without an integration reload.
-        finish_mode = self.finish_mode
         charge_duration_hours = (energy_needed / max_kw) if max_kw > 0 else 0.0
-        if finish_mode == FINISH_MODE_END_OF_NIGHT and self.departure_time is not None:
-            target_finish = self._latest_night_end_before(
-                self.departure_time, night_end, now
-            )
-            # No future night_end fits between now and departure — degrade
-            # to finishing exactly at departure instead of aiming at a past
-            # night_end (which would make latest_start nonsensical).
-            if target_finish is None:
-                target_finish = self.departure_time
-        elif finish_mode == FINISH_MODE_DEPARTURE and self.departure_time is not None:
-            target_finish = self.departure_time
-        else:
-            target_finish = None  # asap, or no departure set yet
 
         # Gentle plan for the non-asap finish modes: charge at the *slowest*
         # current that still finishes by the deadline. See _compute_gentle_plan.
@@ -786,6 +819,7 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             gentle_current=gentle_current,
             day_current=day_current,
             max_a=max_a,
+            asap_current=self.asap_current,  # D-05
         ))
         action = decision.action
         planned_current = decision.planned_current
@@ -1052,7 +1086,13 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
                 now, target_finish, night_start, night_end
             )
         elif finish_mode == FINISH_MODE_DEPARTURE:
-            window_hours = max(0.0, (target_finish - now).total_seconds() / 3600.0)
+            # D-14: spread over night hours only, not all wall-clock hours.
+            # If no night window exists before departure, window_hours=0 and
+            # the guard below returns max_a which triggers deficit day-charging
+            # (DEPART-02 — the existing window_hours <= 0 guard handles it).
+            window_hours = self._night_hours_between(
+                now, target_finish, night_start, night_end
+            )
         else:  # asap — no gentle plan
             return max_a, now
 
