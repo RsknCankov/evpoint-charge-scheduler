@@ -70,7 +70,8 @@ WATCHDOG_ZERO_CYCLES = 3
 WATCHDOG_ZERO_POWER_W = 50.0
 
 # --- Finish mode options ---
-# asap          → start charging as soon as the tariff is favourable (default).
+# asap          → charge immediately at the configured asap_current, regardless
+#                 of tariff. Deficit and safety overrides are bypassed (ASAP-01).
 # end_of_night  → time the charge to finish just before night tariff ends; minimises
 #                 calendar-aging idle at high SoC while keeping 100% on night tariff.
 # departure     → time the charge to finish exactly at departure; may cross into day

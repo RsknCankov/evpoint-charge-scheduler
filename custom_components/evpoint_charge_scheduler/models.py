@@ -26,6 +26,11 @@ class PlanInputs:
     gentle_current: int
     day_current: int
     max_a: int
+    # IMPORTANT: default=0 is for test backward-compat ONLY (preserves all
+    # existing PlanInputs(...) callers that predate this field). Production paths
+    # MUST always supply asap_current explicitly — a 0 here causes ASAP mode to
+    # stop the charger instead of charging. The coordinator wires
+    # asap_current=self.asap_current (initialized to CONF_MAX_CURRENT) every cycle.
     asap_current: int = field(default=0)
 
 

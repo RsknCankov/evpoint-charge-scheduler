@@ -1039,8 +1039,10 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
     ) -> tuple[int, datetime]:
         """Slowest current that finishes by the deadline, and when to start.
 
-        - ``departure``: spread over all the time left to departure (tariff is
-          irrelevant in this mode — the user already opted into day charging).
+        - ``departure``: spread over the *night-tariff hours* available before
+          departure (D-14). When no night window exists before departure,
+          ``window_hours == 0`` and the guard returns ``(max_a, now)``, causing
+          the deficit branch to drive day charging instead (DEPART-02).
         - ``end_of_night`` *with* a learned price + a non-zero cost budget:
           allowed to spill past night-end toward departure, picking the slowest
           current whose total cost stays within ``cost_tolerance_pct`` of the
