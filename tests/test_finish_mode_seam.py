@@ -283,3 +283,25 @@ def test_executed_finish_mode_always_equals_input(
         )
     )
     assert d.executed_finish_mode == finish_mode
+
+
+# --- NIGHT-04/05: Night Only cost-spread and no-departure guard (Phase 06) ---
+
+
+def test_end_of_night_gentle_fires_with_cost_spread_active() -> None:
+    # NIGHT-04: planner produces CHARGE_GENTLE in Night Only when gentle window is active
+    d = plan(_inputs(finish_mode=FINISH_MODE_END_OF_NIGHT, is_night_now=True, gentle_should_start=True))
+    assert d.action == ACTION_CHARGE_GENTLE
+
+
+def test_end_of_night_no_departure_still_gentles() -> None:
+    # NIGHT-05: Night Only with small slack but gentle window due still produces CHARGE_GENTLE
+    d = plan(_inputs(finish_mode=FINISH_MODE_END_OF_NIGHT, is_night_now=True, gentle_should_start=True, slack=2.0))
+    assert d.action == ACTION_CHARGE_GENTLE
+    assert d.executed_finish_mode == FINISH_MODE_END_OF_NIGHT
+
+
+def test_end_of_night_waits_for_night_in_day_regression() -> None:
+    # Regression: end-of-night still waits for night in day after Phase 06 guard change
+    d = plan(_inputs(finish_mode=FINISH_MODE_END_OF_NIGHT, is_night_now=False))
+    assert d.action == ACTION_WAIT_FOR_NIGHT
