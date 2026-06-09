@@ -50,7 +50,7 @@ DEFAULT_CHARGING_LOSS = 1.10
 DEFAULT_TARGET_SOC = 80
 # How much more than the cheapest plan the user will pay for gentler (slower)
 # charging that spills past night-tariff end into day tariff. Percent.
-DEFAULT_COST_TOLERANCE_PCT = 15
+DEFAULT_COST_TOLERANCE_PCT = 5
 DEFAULT_NIGHT_START = "22:00"
 DEFAULT_NIGHT_END = "06:00"
 DEFAULT_SAFETY_MARGIN_HOURS = 0.5

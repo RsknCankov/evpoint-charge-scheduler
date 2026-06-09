@@ -9,7 +9,7 @@ external framework imports and trivially unit-testable.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,7 @@ class PlanInputs:
     gentle_current: int
     day_current: int
     max_a: int
+    asap_current: int = field(default=0)
 
 
 @dataclass(frozen=True)
