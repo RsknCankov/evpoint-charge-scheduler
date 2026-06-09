@@ -24,6 +24,7 @@ CONF_OCPP_DEVID = "ocpp_devid"
 CONF_CHARGING_PROFILE_ID = "charging_profile_id"
 CONF_CHARGER_SWITCH = "charger_switch"
 CONF_PRICE_SENSOR = "price_sensor"  # optional electricity price sensor
+CONF_NOTIFY_SERVICE = "notify_service"  # optional HA notify service (e.g. notify.mobile_app_phone)
 
 CONF_BATTERY_CAPACITY = "battery_capacity"
 CONF_VOLTAGE = "voltage"

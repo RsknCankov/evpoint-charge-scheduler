@@ -50,6 +50,7 @@ from .const import (
     CONF_NIGHT_END,
     CONF_NIGHT_START,
     CONF_NIGHT_TARIFF_VALUE,
+    CONF_NOTIFY_SERVICE,
     CONF_OCPP_DEVID,
     CONF_OCPP_SET_RATE_SERVICE,
     CONF_CHARGING_PROFILE_ID,
@@ -191,6 +192,10 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         # Last applied charger state, used to avoid spamming the charger.
         self._last_applied_current: int | None = None
         self._last_applied_running: bool | None = None
+        # Edge-trigger tracker for the day-supplement notification (NIGHT-03).
+        # Stores the last action for which a notify service call was dispatched.
+        # Reset to None on session end so the notification fires again next session.
+        self._last_notified_action: str | None = None
         self._unsub_state_listener = None
 
         # Charger-reboot recovery watchdog (REL-01). Counts CONSECUTIVE update
@@ -518,6 +523,9 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         # with a stale total and trip a false energy-counting SUCCESS end.
         self.delivered_energy_kwh = 0.0
         self._last_power_ts = None
+        # Reset the notification edge-trigger so it fires again in the next session
+        # (NIGHT-03).
+        self._last_notified_action = None
         if self._current_soc_entity is not None:
             await self._current_soc_entity.async_reset()
         self.current_soc = None
@@ -823,6 +831,38 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         ))
         action = decision.action
         planned_current = decision.planned_current
+
+        # Edge-triggered day-supplement notification (NIGHT-03, D-03/D-04/D-06).
+        # Fires exactly once per session when the action first becomes
+        # ACTION_CHARGE_DAY_SUPPLEMENT. The else branch updates the tracker on
+        # EVERY cycle so that transitions back from day-supplement (e.g. into
+        # charge_gentle or wait_for_night) are recorded and would re-fire the
+        # notification on the NEXT transition in, within the same session.
+        if (
+            action == ACTION_CHARGE_DAY_SUPPLEMENT
+            and self._last_notified_action != ACTION_CHARGE_DAY_SUPPLEMENT
+        ):
+            self._last_notified_action = ACTION_CHARGE_DAY_SUPPLEMENT
+            notify_svc = self._config.get(CONF_NOTIFY_SERVICE, "")
+            if notify_svc and "." in notify_svc:
+                domain_n, svc_name = notify_svc.split(".", 1)
+                self.hass.async_create_task(
+                    self.hass.services.async_call(
+                        domain_n,
+                        svc_name,
+                        {
+                            "message": (
+                                f"EV day-tariff charging started — night window alone is not"
+                                f" enough to reach target. Charging now at {day_current}A"
+                                f" to supplement."
+                            ),
+                            "title": "EV charging: day tariff supplement",
+                        },
+                        blocking=False,
+                    )
+                )
+        else:
+            self._last_notified_action = action
 
         # Load balancing against apartment consumption. Without a sensor,
         # we assume the apartment isn't drawing anything and let the charger
