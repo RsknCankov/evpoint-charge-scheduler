@@ -19,6 +19,7 @@ from .const import (
     END_BACKSTOP,
     END_CONTINUE,
     END_SUCCESS,
+    FINISH_MODE_ASAP,
     FINISH_MODE_DEPARTURE,
     FINISH_MODE_END_OF_NIGHT,
 )
@@ -34,8 +35,12 @@ def plan(i: PlanInputs) -> Decision:
         action = ACTION_DONE
     elif i.hours_to_dep <= 0:
         action = ACTION_TOO_LATE
+    elif i.finish_mode == FINISH_MODE_ASAP:
+        # ASAP: charge immediately at asap_current regardless of tariff; deficit
+        # and safety overrides are suppressed — the user asked to charge now.
+        action = ACTION_CHARGE_MAX
     elif i.deficit_kwh > 0:
-        # Always honour the deficit — applies in every finish mode
+        # Always honour the deficit — applies in every finish mode except ASAP
         action = ACTION_CHARGE_DAY_SUPPLEMENT
     elif i.slack < i.safety_margin:
         # Safety: too tight to wait around
@@ -55,14 +60,15 @@ def plan(i: PlanInputs) -> Decision:
             action = ACTION_CHARGE_GENTLE
         else:
             action = ACTION_WAIT_FOR_START_TIME
-    else:  # FINISH_MODE_ASAP — burst at max as soon as tariff allows
-        if i.is_night_now:
-            action = ACTION_CHARGE_MAX
-        else:
-            action = ACTION_WAIT_FOR_NIGHT
+    else:
+        # Defensive fallback — all three modes are explicitly matched above;
+        # this branch is unreachable with valid finish_mode values.
+        action = ACTION_WAIT_FOR_NIGHT
 
     # Plan-level target current (before load balancing)
-    if action == ACTION_CHARGE_MAX:
+    if action == ACTION_CHARGE_MAX and i.finish_mode == FINISH_MODE_ASAP:
+        planned_current = i.asap_current
+    elif action == ACTION_CHARGE_MAX:
         planned_current = i.max_a
     elif action == ACTION_CHARGE_GENTLE:
         planned_current = i.gentle_current
