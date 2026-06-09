@@ -1104,12 +1104,12 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             finish_mode == FINISH_MODE_END_OF_NIGHT
             and prices_ready
             and self.cost_tolerance_pct > 0
-            and self.departure_time is not None
+            and target_finish is not None
         ):
             return self._gentle_current_within_budget(
                 energy_needed,
                 now,
-                self.departure_time,
+                target_finish,
                 night_start,
                 night_end,
                 voltage,
