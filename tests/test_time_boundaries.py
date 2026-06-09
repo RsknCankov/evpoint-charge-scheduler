@@ -176,6 +176,49 @@ def test_is_in_night_window_at_departure_boundary_inclusivity() -> None:
     )
 
 
+# --- _next_night_end forward-looking boundary tests (D-08) ------------------
+
+
+def test_next_night_end_before_tonight_returns_today() -> None:
+    """now=03:00, night_end=07:00 -> today's 07:00 (future)."""
+    now = datetime(2026, 3, 11, 3, 0, tzinfo=SOFIA)
+    result = SmartEVChargingCoordinator._next_night_end(now, NIGHT_END)
+    assert result == datetime(2026, 3, 11, 7, 0, tzinfo=SOFIA)
+    assert result > now
+
+
+def test_next_night_end_after_tonight_returns_tomorrow() -> None:
+    """now=08:00, night_end=07:00 -> tomorrow's 07:00."""
+    now = datetime(2026, 3, 11, 8, 0, tzinfo=SOFIA)
+    result = SmartEVChargingCoordinator._next_night_end(now, NIGHT_END)
+    assert result == datetime(2026, 3, 12, 7, 0, tzinfo=SOFIA)
+    assert result > now
+
+
+def test_next_night_end_exactly_at_night_end_returns_tomorrow() -> None:
+    """now=07:00:00, night_end=07:00 -> candidate == now -> +1 day (D-08 boundary)."""
+    now = datetime(2026, 3, 11, 7, 0, 0, tzinfo=SOFIA)
+    result = SmartEVChargingCoordinator._next_night_end(now, NIGHT_END)
+    assert result == datetime(2026, 3, 12, 7, 0, tzinfo=SOFIA)
+    assert result > now
+
+
+def test_next_night_end_always_strictly_future() -> None:
+    """Result is always strictly > now, regardless of time-of-day."""
+    for hour in [0, 1, 6, 7, 12, 22, 23]:
+        now = datetime(2026, 6, 9, hour, 0, tzinfo=SOFIA)
+        result = SmartEVChargingCoordinator._next_night_end(now, NIGHT_END)
+        assert result > now, f"Not strictly future at hour={hour}: result={result}"
+
+
+def test_next_night_end_preserves_tzinfo() -> None:
+    """Result carries the same tzinfo as now (tz-aware invariant)."""
+    now = datetime(2026, 3, 11, 3, 0, tzinfo=SOFIA)
+    result = SmartEVChargingCoordinator._next_night_end(now, NIGHT_END)
+    assert result.tzinfo is not None
+    assert result.tzinfo == now.tzinfo
+
+
 # --- Layer 2: full coordinator under DST transitions -------------------------
 
 

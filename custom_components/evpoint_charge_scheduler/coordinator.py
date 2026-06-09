@@ -219,6 +219,13 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         self._learned_night_price: float | None = None
         self._learned_day_price: float | None = None
 
+        # User-configurable ASAP amperage. Defaults to max_a; the Phase 07
+        # number entity will expose a writable UI for it. Passed into PlanInputs
+        # each cycle so the planner can use it for ASAP mode (D-04, D-05).
+        self.asap_current: int = int(
+            self._config.get(CONF_MAX_CURRENT, DEFAULT_MAX_CURRENT)
+        )
+
     async def async_config_entry_first_refresh(self) -> None:
         """Subscribe to external sensors and do the first update."""
         await super().async_config_entry_first_refresh()
@@ -1190,6 +1197,45 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
             candidate -= timedelta(days=1)
         if candidate <= now:
             return None
+        return candidate
+
+    @staticmethod
+    def _next_night_end(now: datetime, night_end_time: time) -> datetime:
+        """Next strictly-future occurrence of ``night_end_time`` from ``now``.
+
+        If ``now`` is before tonight's night_end (e.g. 03:00, night ends 07:00),
+        returns today's occurrence. Otherwise (at or past tonight's night_end),
+        rolls forward to tomorrow's. The ``<= now`` check (not ``< now``) ensures
+        that a ``now`` exactly at night_end returns tomorrow — matching the
+        boundary precedent in ``_latest_night_end_before`` (D-08).
+        Preserves ``now``'s ``tzinfo`` via ``replace()``.
+        """
+        candidate = now.replace(
+            hour=night_end_time.hour,
+            minute=night_end_time.minute,
+            second=0,
+            microsecond=0,
+        )
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        return candidate
+
+    @staticmethod
+    def _next_night_start(now: datetime, night_start_time: time) -> datetime:
+        """Next strictly-future occurrence of ``night_start_time`` from ``now``.
+
+        Same forward-looking contract as ``_next_night_end`` (D-08 / D-13).
+        Used for Night Only ``day_hours``: the hours from now until tonight's
+        charging window opens.
+        """
+        candidate = now.replace(
+            hour=night_start_time.hour,
+            minute=night_start_time.minute,
+            second=0,
+            microsecond=0,
+        )
+        if candidate <= now:
+            candidate += timedelta(days=1)
         return candidate
 
     @staticmethod
