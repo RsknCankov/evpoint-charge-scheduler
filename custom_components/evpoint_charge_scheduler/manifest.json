@@ -1,7 +1,7 @@
 {
   "domain": "evpoint_charge_scheduler",
   "name": "EVPoint Charge Scheduler",
-  "version": "1.0.0",
+  "version": "2.0.0-dev",
   "codeowners": ["@yourname"],
   "config_flow": true,
   "dependencies": [],
