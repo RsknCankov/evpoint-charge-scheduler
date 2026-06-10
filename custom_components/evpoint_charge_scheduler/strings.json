@@ -8,6 +8,7 @@
           "tariff_sensor": "Electricity tariff sensor",
           "night_tariff_value": "Sensor value that means 'night tariff' (e.g. night, off_peak)",
           "price_sensor": "Electricity price sensor (optional, enables cost-aware slow charging)",
+          "notify_service": "Notify service (optional, e.g. notify.mobile_app_phone)",
           "apartment_current_sensor": "Apartment current sensor (Amps, excluding EV)",
           "soc_sensor": "Car State of Charge sensor (optional)",
           "charger_power_sensor": "Charger power sensor (W or kW, optional — enables energy-counting completion)",
@@ -42,6 +43,7 @@
           "tariff_sensor": "Electricity tariff sensor",
           "night_tariff_value": "Sensor value that means 'night tariff'",
           "price_sensor": "Electricity price sensor (optional, enables cost-aware slow charging)",
+          "notify_service": "Notify service (optional, e.g. notify.mobile_app_phone)",
           "apartment_current_sensor": "Apartment current sensor",
           "soc_sensor": "Car State of Charge sensor (optional)",
           "charger_power_sensor": "Charger power sensor (W or kW, optional — enables energy-counting completion)",
@@ -68,9 +70,9 @@
   "selector": {
     "finish_mode": {
       "options": {
-        "asap": "ASAP — charge as soon as tariff allows",
-        "end_of_night": "End of night — finish just before night tariff ends",
-        "departure": "Departure — finish exactly at departure"
+        "asap": "ASAP",
+        "end_of_night": "Night Only",
+        "departure": "Departure"
       }
     }
   },
@@ -79,15 +81,18 @@
       "finish_mode": {
         "name": "Finish mode",
         "state": {
-          "asap": "ASAP — charge as soon as tariff allows",
-          "end_of_night": "End of night — finish just before night tariff ends",
-          "departure": "Departure — finish exactly at departure"
+          "asap": "ASAP",
+          "end_of_night": "Night Only",
+          "departure": "Departure"
         }
       }
     },
     "number": {
       "battery_capacity": {
         "name": "Battery capacity"
+      },
+      "asap_current": {
+        "name": "ASAP charging current"
       }
     },
     "button": {

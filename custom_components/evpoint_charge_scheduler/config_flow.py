@@ -21,6 +21,7 @@ from .const import (
     CONF_NIGHT_END,
     CONF_NIGHT_START,
     CONF_NIGHT_TARIFF_VALUE,
+    CONF_NOTIFY_SERVICE,
     CONF_OCPP_DEVID,
     CONF_OCPP_SET_RATE_SERVICE,
     CONF_CHARGING_PROFILE_ID,
@@ -75,6 +76,11 @@ def _build_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             # prices from history so end_of_night can trade a little extra cost
             # for gentler (slower) charging within the user's budget.
             vol.Optional(CONF_PRICE_SENSOR, default=d.get(CONF_PRICE_SENSOR, vol.UNDEFINED)): _entity_selector("sensor"),
+            # Optional HA notify service for mobile push notifications
+            # (e.g. notify.mobile_app_phone). When set, the coordinator sends
+            # a push the first time day-tariff supplement charging starts in a
+            # session. Leave blank to disable notifications.
+            vol.Optional(CONF_NOTIFY_SERVICE, default=d.get(CONF_NOTIFY_SERVICE, vol.UNDEFINED)): str,
             vol.Optional(CONF_APARTMENT_CURRENT_SENSOR, default=d.get(CONF_APARTMENT_CURRENT_SENSOR, vol.UNDEFINED)): _entity_selector("sensor"),
             vol.Optional(CONF_SOC_SENSOR, default=d.get(CONF_SOC_SENSOR, vol.UNDEFINED)): _entity_selector("sensor"),
             # Optional charger power sensor (W or kW). When configured, the

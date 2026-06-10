@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfEnergy
+from homeassistant.const import PERCENTAGE, UnitOfElectricCurrent, UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -17,10 +17,14 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
     CONF_BATTERY_CAPACITY,
+    CONF_MAX_CURRENT,
+    CONF_MIN_CURRENT,
     CONF_PRICE_SENSOR,
     CONF_SOC_SENSOR,
     DEFAULT_BATTERY_CAPACITY,
     DEFAULT_COST_TOLERANCE_PCT,
+    DEFAULT_MAX_CURRENT,
+    DEFAULT_MIN_CURRENT,
     DEFAULT_TARGET_SOC,
     DOMAIN,
 )
@@ -36,6 +40,8 @@ async def async_setup_entry(
     entities: list[NumberEntity] = [
         BatteryCapacityNumber(coordinator, entry),
         TargetSoCNumber(coordinator, entry),
+        # ASAP charging current — always created; ASAP mode is always available.
+        ASAPCurrentNumber(coordinator, entry),
     ]
     # Only show the manual current-SoC input if no external sensor is wired up
     if not entry.data.get(CONF_SOC_SENSOR) and not entry.options.get(CONF_SOC_SENSOR):
@@ -234,4 +240,57 @@ class CostToleranceNumber(NumberEntity, RestoreEntity):
             )
         self._attr_native_value = value
         await self._coordinator.async_set_cost_tolerance(value)
+        self.async_write_ha_state()
+
+
+class ASAPCurrentNumber(NumberEntity, RestoreEntity):
+    """ASAP charging current in amps.
+
+    Sets the amperage used when finish_mode == ASAP. Persists across restarts
+    via RestoreEntity and is locked during an active session (raise-and-revert).
+    Always created — ASAP mode is always available regardless of other config.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "ASAP charging current"
+    _attr_icon = "mdi:lightning-bolt"
+    _attr_mode = NumberMode.BOX
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+
+    def __init__(self, coordinator: SmartEVChargingCoordinator, entry: ConfigEntry) -> None:
+        self._coordinator = coordinator
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_asap_current"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, entry.entry_id)},
+            "name": "EVPoint Charge Scheduler",
+            "manufacturer": "EVPoint Charge Scheduler",
+        }
+        cfg = {**entry.data, **entry.options}
+        self._attr_native_min_value = float(cfg.get(CONF_MIN_CURRENT, DEFAULT_MIN_CURRENT))
+        self._attr_native_max_value = float(cfg.get(CONF_MAX_CURRENT, DEFAULT_MAX_CURRENT))
+        self._attr_native_value: float | None = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state and last_state.state not in (None, "unknown", "unavailable"):
+            try:
+                self._attr_native_value = float(last_state.state)
+            except (TypeError, ValueError):
+                self._attr_native_value = self._attr_native_max_value
+        if self._attr_native_value is None:
+            self._attr_native_value = self._attr_native_max_value
+        await self._coordinator.async_set_asap_current(int(self._attr_native_value))
+
+    async def async_set_native_value(self, value: float) -> None:
+        if self._coordinator.inputs_locked:
+            self.async_write_ha_state()  # snap back to the running value
+            raise HomeAssistantError(
+                "ASAP charging current is locked while a charging session is active. "
+                "Stop the session to change it."
+            )
+        self._attr_native_value = value
+        await self._coordinator.async_set_asap_current(int(value))
         self.async_write_ha_state()

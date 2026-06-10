@@ -453,6 +453,11 @@ class SmartEVChargingCoordinator(DataUpdateCoordinator):
         self.cost_tolerance_pct = float(value)
         await self.async_refresh()
 
+    async def async_set_asap_current(self, value: int) -> None:
+        """Set ASAP charging current (amps). Written by the ASAPCurrentNumber entity."""
+        self.asap_current = int(value)
+        await self.async_refresh()
+
     def register_current_soc_entity(self, entity) -> None:
         """Called by the manual current-SoC number entity once it is added."""
         self._current_soc_entity = entity
